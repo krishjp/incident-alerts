@@ -1,81 +1,65 @@
-
 ---
 
-# CHP Incident Notification System
+# CHP Incident Notification System 🚗⚠️
 
-A Python-based automation tool that scrapes the **CHP CAD (Computer Aided Dispatch)** portal to identify traffic incidents. The system filters these incidents against user-defined "subscribed routes" and "subscribed times" to send targeted notifications, ensuring users only receive alerts relevant to their commute.
+A full-stack Next.js and Python web application that dynamically checks the **CHP CAD (Computer Aided Dispatch)** portal to identify traffic incidents. The Next.js frontend allows users to configure "subscribed routes" and "subscribed times", while the Python backend monitors incidents on those routes using Selenium, summarizes them with Gemini, and dispatches mock Twilio SMS alerts.
 
-## Features
+## 🌟 Features
 
-* **Real-Time Web Scraping:** Uses **Selenium** to navigate the [CHP Traffic Incident Information Page](https://cad.chp.ca.gov/).
-* **Dynamic Data Extraction:** Handles JavaScript-heavy elements, including selecting specific Communication Centers (e.g., Los Angeles) and extracting deep-level "Detail Information" for every incident.
-* **Route Subscription Logic:** Filters raw incident data by matching "Location" and "Area" fields against a user's specific travel path.
-* **Temporal Filtering:** Allows users to set notification windows (e.g., 8:00 AM – 9:00 AM) so they are only alerted during their active commute.
-* **Structured Data Modeling:** Utilizes a custom `Incident` class to store incident numbers, timestamps, types, locations, and granular dispatch logs.
+* **Real-Time Next.js Dashboard**: User friendly web application (Tailwind) to register routes and update notification phone numbers.
+* **Database & Auth (Auth.js)**: Integrates PostgreSQL + Prisma for reliable data storage. Allows login via email credentials.
+* **Intelligent Scraping**: A headless Selenium scraper grabs raw dispatch payloads across specific geographical regions on the CHP website.
+* **AI-Powered Summaries**: Utilizes `gemini-2.5-flash` to condense complex police dispatch logs into a short, impactful text message.
+* **Temporal Route Matching**: Filters incoming live traffic data against the specific start/end times and route IDs configured by the user.
 
-## Project Structure
+## 🏗️ Project Structure
 
-* **`scraper.py`**: The core engine that automates the browser, interacts with dropdowns, and handles the "Details" expansion for each incident row.
-* **`models.py`**: Defines the `Incident` class and data structures for users and their subscriptions.
-* **`notifier.py`**: (Target for development) Logic to trigger SMS, Email, or Push notifications when a match is found.
+* **`docker-compose.yml`**: Spins up a local PostgreSQL database for storing user accounts and route subscriptions.
+* **`frontend/`**: The Next.js client. Contains NextAuth logic, routing, layout pages, Prisma config, and API endpoints. 
+* **`backend/`**: The background Python worker. Contains:
+  * `main.py`: The worker loop that checks active subscriptions.
+  * `scrapper.py`: Runs a headless Chrome instance to scrape live CHP details.
+  * `models.py`: Connects to PostgreSQL directly via SQLAlchemy to read subscriptions created by the Next.js app.
 
-## Installation
+## 🚀 Installation & Setup
 
-1. **Clone the repository:**
+### 1. Database Initialization
+This project uses Docker to run PostgreSQL locally.
 ```bash
-git clone https://github.com/your-username/chp-incident-alerts.git
-cd chp-incident-alerts
-
+docker compose up -d
 ```
+The database exposed on `127.0.0.1:5433` avoids conflicts with existing local postgres setups.
 
-
-2. **Install dependencies:**
+### 2. Frontend Configuration
 ```bash
-pip install selenium webdriver-manager
-
+cd frontend
+npm install
+npx prisma db push
 ```
 
+Start the Next.js development server:
+```bash
+npm run dev
+```
+You can access the frontend at [http://localhost:3000](http://localhost:3000). To test quickly, sign in using an email layout such as `test@example.com` and password `password`.
 
-3. **Drivers:**
-The project uses `webdriver-manager` to automatically handle Chrome driver binaries. Ensure you have Google Chrome installed.
-
-## Usage
-
-### 1. Configure Subscriptions
-
-Define your routes and times in a configuration file (e.g., `config.json`):
-
-```json
-{
-  "user_subscriptions": [
-    {
-      "route": "I-405 S",
-      "area": "West LA",
-      "start_time": "17:00",
-      "end_time": "18:30"
-    }
-  ]
-}
-
+### 3. Backend Worker Configuration
+```bash
+cd backend
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### 2. Run the Scraper
+Set up your `.env` file under `backend/`. If testing without a real Gemini key, leave it as `dummy_gemini` to receive a mock notification layout instead.
 
-```python
-python scraper.py
-
+Start the background service:
+```bash
+python main.py
 ```
 
-## Data Flow
+## 📝 Usage Flow
 
-The system follows a linear path to ensure data accuracy:
-
-1. **Selection:** Selects the relevant Communication Center from the `ddlComCenter` dropdown.
-2. **Collection:** Iterates through the `gvIncidents` table rows.
-3. **Expansion:** For each row, clicks the **"Details"** link to reveal the dispatch log (lat/lon, specific hazards, etc.).
-4. **Matching:** Compares the location and time against the user's `subscribed route`.
-5. **Alerting:** Dispatches a notification if a match is detected.
-
-## Disclaimer
-
-This project is for educational and personal use. Please respect the CHP's website terms of service and avoid aggressive scraping intervals that may stress their servers. The site naturally refreshes every 60 seconds.
+1. **Sign In**: Navigate to the Web App to sign in or sign up.
+2. **Subscribe**: Create a new subscription for your route (e.g. Area: `Los Angeles`, Route: `I-405 S`, Times: `07:00` - `09:00`). Enter a valid phone number.
+3. **Wait & Alert**: The backend worker continuously evaluates if the current time matches any subscription. It performs scraping tasks dynamically matching active routes and area regions. When a crash occurs, Gemini writes a summary and an SMS trigger is printed.
