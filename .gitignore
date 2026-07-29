@@ -8,3 +8,5 @@ __pycache__/
 *.log
 coverage/
 *.json
+.codegraph/
+.pytest_cache/
