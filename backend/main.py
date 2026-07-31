@@ -44,28 +44,25 @@ def summarize_incident(incident_data):
     return summary
 
 from models import get_active_subscriptions, SessionLocal, NotifiedIncident
-from scrapper import scrape_chp_area
-
-def send_sms(to_phone, message):
-    print(f"\n[TEXT MESSAGE to {to_phone}]")
-    print(f"From: {TWILIO_PHONE}")
-    print(f"Message: {message}\n")
-
+from caltrans_client import fetch_caltrans_incidents
+from notification_queue import global_notification_queue
 
 def check_and_notify():
     print("Checking active subscriptions...")
     active_subs = get_active_subscriptions()
     if not active_subs:
         print("No active subscriptions for the current time window.")
+        # Process any pending retries in the notification queue
+        global_notification_queue.process_queue()
         return
 
-    # Group by area to avoid scraping same area multiple times
-    areas_to_scrape = set(sub["sub"].area for sub in active_subs)
+    # Group by area to avoid fetching same area multiple times
+    areas_to_fetch = set(sub["sub"].area for sub in active_subs)
     
     incidents_by_area = {}
-    for area in areas_to_scrape:
-        print(f"Scraping area: {area}...")
-        incidents = scrape_chp_area(area)
+    for area in areas_to_fetch:
+        print(f"Fetching Caltrans API feed for area: {area}...")
+        incidents = fetch_caltrans_incidents(area)
         incidents_by_area[area] = incidents
         print(f"Found {len(incidents)} incidents in {area}.")
 
@@ -105,7 +102,9 @@ def check_and_notify():
                         summary = summarize_incident(inc)
                         prefix = "CHP UPDATE Alert" if is_update else "CHP Alert"
                         message = f"{prefix} for {sub.origin}->{sub.destination}: {summary}"
-                        send_sms(phone, message)
+                        
+                        # Enqueue outbound SMS alert to notification queue with retries & DLQ handling
+                        global_notification_queue.enqueue(to_phone=phone, message=message)
                         
                         if not notified_record:
                             new_record = NotifiedIncident(id=inc_id, state=current_state)
@@ -118,6 +117,9 @@ def check_and_notify():
                     db.rollback()
                 finally:
                     db.close()
+
+    # Process all queued notifications (with retries and DLQ dispatch)
+    global_notification_queue.process_queue()
 
 if __name__ == "__main__":
     print("Starting CHP Notification Worker...")
