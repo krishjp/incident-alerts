@@ -65,6 +65,26 @@ def haversine_distance_miles(coord1, coord2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
+def get_bounding_box(route_points, buffer_miles=5.0):
+    """
+    Computes a bounding box (min_lat, max_lat, min_lon, max_lon)
+    extended by buffer_miles around a set of coordinates.
+    1 degree of latitude is approx 69 miles.
+    """
+    lats = [p[0] for p in route_points]
+    lons = [p[1] for p in route_points]
+    lat_buffer = buffer_miles / 69.0
+    # Approximate lon buffer based on median latitude
+    median_lat = lats[len(lats) // 2]
+    lon_buffer = buffer_miles / (69.0 * math.cos(math.radians(median_lat)))
+
+    return (
+        min(lats) - lat_buffer,
+        max(lats) + lat_buffer,
+        min(lons) - abs(lon_buffer),
+        max(lons) + abs(lon_buffer)
+    )
+
 def is_within_range_pure(incident_lat_lon, encoded_polyline, max_miles=5.0):
     if not incident_lat_lon or incident_lat_lon == "None":
         return False
@@ -92,6 +112,11 @@ def is_within_range_pure(incident_lat_lon, encoded_polyline, max_miles=5.0):
     if not route_points:
         return False
 
+    # Bounding Box Pre-filter check (O(1) fast rejection)
+    min_lat, max_lat, min_lon, max_lon = get_bounding_box(route_points, buffer_miles=max_miles)
+    if not (min_lat <= inc_lat <= max_lat and min_lon <= inc_lon <= max_lon):
+        return False
+
     incident_pt = (inc_lat, inc_lon)
     for pt in route_points:
         dist = haversine_distance_miles(incident_pt, pt)
@@ -99,3 +124,4 @@ def is_within_range_pure(incident_lat_lon, encoded_polyline, max_miles=5.0):
             return True
                 
     return False
+

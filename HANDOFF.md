@@ -35,9 +35,9 @@ Key capabilities:
     - Point-to-point spatial buffer checks & CHP lat/lon format parsing.
     - Specific street address turn-by-turn routes (Van Nuys City Hall -> Santa Monica City Hall).
     - Golf course commute routes (Meadowlark Golf Club -> Alondra Golf Course along I-405 N/S).
-- [x] **Documentation & Git Ignore Configuration**:
-  - Updated [.gitignore](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/.gitignore) to exclude `.codegraph/`, `.pytest_cache/`, environment files, and logs.
-  - Comprehensive local development & deployment instructions added to [README.md](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/README.md) (Docker, PostgreSQL 5433, Prisma, Next.js, Python worker, Pytest).
+  - Added bounding box pre-filter (`get_bounding_box`) in [backend/route_utils.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/route_utils.py#L68-L86) for $O(1)$ fast spatial rejection of distant incidents before running geodesic distance loops.
+  - Implemented Gemini AI summary caching (`_SUMMARY_CACHE`) in [backend/main.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/main.py#L17-L45) to prevent redundant AI API calls for identical incidents across multiple user subscriptions.
+  - Unit tests added to [backend/tests/test_routes.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_routes.py) for bounding box rejection (`test_bounding_box_fast_rejection`) and summary caching (`test_summary_caching`).
 
 ---
 

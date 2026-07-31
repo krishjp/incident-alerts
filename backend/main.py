@@ -2,11 +2,7 @@ import os
 import time
 from dotenv import load_dotenv
 from google import genai
-from models import get_active_subscriptions, SessionLocal, NotifiedIncident
-from scrapper import scrape_chp_area
-from collections import defaultdict
-import polyline
-from geopy.distance import geodesic
+from route_utils import is_within_range_pure as is_within_range
 
 load_dotenv()
 
@@ -17,67 +13,44 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY != "dummy
 # Mock Twilio
 TWILIO_PHONE = os.getenv("TWILIO_PHONE_NUMBER")
 
+# In-memory summary cache to prevent duplicate Gemini API calls for the same incident across multiple users
+_SUMMARY_CACHE = {}
+
 def summarize_incident(incident_data):
+    inc_num = incident_data.get('number', 'unknown')
+    raw_details = str(incident_data.get('details', ''))
+    
+    # Return cached summary if details haven't changed
+    cache_key = (inc_num, raw_details)
+    if cache_key in _SUMMARY_CACHE:
+        return _SUMMARY_CACHE[cache_key]
+
     if not gemini_client:
-        return f"[Mock Summary] Incident {incident_data['number']} at {incident_data['location']}. Details: {incident_data['details']['full_text_blob'][:50]}..."
+        summary = f"[Mock Summary] Incident {inc_num} at {incident_data['location']}. Details: {incident_data['details']['full_text_blob'][:50]}..."
+        _SUMMARY_CACHE[cache_key] = summary
+        return summary
     
     try:
         response = gemini_client.models.generate_content(
             model='gemini-2.5-flash',
             contents=f"Summarize this traffic incident for a quick SMS alert (max 150 chars): {incident_data}"
         )
-        return response.text.strip()
+        summary = response.text.strip()
     except Exception as e:
         print("Gemini error:", e)
-        return f"Incident at {incident_data['location']}: {incident_data['type']}"
+        summary = f"Incident at {incident_data['location']}: {incident_data['type']}"
+
+    _SUMMARY_CACHE[cache_key] = summary
+    return summary
+
+from models import get_active_subscriptions, SessionLocal, NotifiedIncident
+from scrapper import scrape_chp_area
 
 def send_sms(to_phone, message):
     print(f"\n[TEXT MESSAGE to {to_phone}]")
     print(f"From: {TWILIO_PHONE}")
     print(f"Message: {message}\n")
 
-def is_within_range(incident_lat_lon, encoded_polyline, max_miles=5.0):
-    if not incident_lat_lon or incident_lat_lon == "None":
-        return False
-    
-    # CHP Lat_Lon formatted as usually "34.1234 -118.1234"
-    try:
-        parts = incident_lat_lon.strip().split()
-        if len(parts) == 2:
-            inc_lat, inc_lon = float(parts[0]), float(parts[1])
-        elif ":" in incident_lat_lon:
-            parts = incident_lat_lon.replace(' ', '').split(":")
-            inc_lat, inc_lon = float(parts[0]), float(parts[1])
-        else:
-            return False
-    except Exception as e:
-        print(f"Failed to parse incident lat long: {incident_lat_lon}")
-        return False
-
-    if encoded_polyline == "dummy_polyline":
-        return True # if dummy polyline, pass all to show functionality
-
-    try:
-        route_points = polyline.decode(encoded_polyline) # List of (lat, lon)
-    except Exception as e:
-        print("Failed to decode polyline", e)
-        return False
-
-    if not route_points:
-        return False
-
-    incident_pt = (inc_lat, inc_lon)
-    min_dist = float('inf')
-
-    # Find shortest distance to any point on the polyline path
-    for pt in route_points:
-        dist = geodesic(incident_pt, pt).miles
-        if dist < min_dist:
-            min_dist = dist
-            if min_dist <= max_miles:
-                return True
-                
-    return False
 
 def check_and_notify():
     print("Checking active subscriptions...")

@@ -61,6 +61,26 @@ def test_chp_colon_formatted_lat_lon(sample_route_polyline):
     incident_lat_lon = "34.0905:-118.4685"
     assert is_within_range(incident_lat_lon, sample_route_polyline, max_miles=1.0)
 
+def test_bounding_box_fast_rejection(sample_route_polyline):
+    # Latitude 40.0 (San Francisco area) -> Should be immediately rejected by bounding box pre-filter without geodesic loop
+    far_away_incident = "40.0000 -122.0000"
+    assert not is_within_range(far_away_incident, sample_route_polyline, max_miles=5.0)
+
+def test_summary_caching():
+    from main import summarize_incident, _SUMMARY_CACHE
+    test_data = {
+        "number": "9999",
+        "location": "I-405 S",
+        "type": "Traffic Hazard",
+        "details": {"full_text_blob": "Lanes blocked due to debris."}
+    }
+    sum1 = summarize_incident(test_data)
+    cache_key = ("9999", str(test_data["details"]))
+    assert cache_key in _SUMMARY_CACHE
+    sum2 = summarize_incident(test_data)
+    assert sum1 == sum2
+
+
 
 # --- Street Address Geocoding & Routing Tests ---
 
