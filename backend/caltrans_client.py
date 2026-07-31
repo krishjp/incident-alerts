@@ -20,7 +20,7 @@ AREA_PREFIXES = {
 
 class CaltransAPIClient:
     """
-    API Handler for Caltrans QuickMap real-time traffic & CHP incident XML/KML feeds.
+    API Handler for Caltrans QuickMap real-time traffic incident XML/KML feeds.
     Replaces legacy Selenium web scraping with lightweight direct HTTP feed fetching.
     """
 
@@ -41,7 +41,7 @@ class CaltransAPIClient:
 
     def get_incidents(self, area_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Parses live CHP incidents from the Caltrans KML feed.
+        Parses live traffic incidents from the Caltrans KML feed.
         Optional area_name filters incidents matching specific regions (e.g. 'Los Angeles').
         Returns list of incident dictionaries aligned with Incident data_class format.
         """
@@ -78,8 +78,8 @@ class CaltransAPIClient:
 
             desc_html = desc_elem.text or ""
 
-            # Extract Incident Number
-            num_match = re.search(r'CHP Incident\s+([A-Za-z0-9]+)', desc_html)
+            # Extract Incident Number (e.g. "CHP Incident 260731LA0100" or "Incident 260731LA0100")
+            num_match = re.search(r'(?:CHP\s+)?Incident\s+([A-Za-z0-9]+)', desc_html, re.IGNORECASE)
             number = num_match.group(1) if num_match else "UNKNOWN"
 
             # Determine area from incident ID prefix

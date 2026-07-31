@@ -6,8 +6,8 @@ import Providers from "./providers";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "CHP Alert System",
-  description: "Monitor routes and get texted when accidents happen during your commute.",
+  title: "Incident Alert System",
+  description: "Monitor routes and get texted when traffic incidents happen during your commute.",
 };
 
 export default function RootLayout({

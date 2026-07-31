@@ -1,19 +1,19 @@
-# CHP Incident Notification System 🚗⚠️
+# Incident Notification System 🚗⚠️
 
-A full-stack Next.js and Python web application that dynamically checks **Caltrans QuickMap & CHP CAD** API data feeds to identify traffic incidents. The Next.js frontend allows users to configure subscribed commute routes (defined by turn-by-turn driving polylines between specific street addresses) and scheduled active hours, while the Python backend worker monitors incidents on those routes using a lightweight XML/KML API client, summarizes them with Gemini AI, and dispatches SMS alerts via an asynchronous retry-enabled notification queue.
+A full-stack Next.js and Python web application that dynamically checks **Caltrans QuickMap & Traffic CAD** API data feeds to identify traffic incidents. The Next.js frontend allows users to configure subscribed commute routes (defined by turn-by-turn driving polylines between specific street addresses) and scheduled active hours, while the Python backend worker monitors incidents on those routes using a lightweight XML/KML API client, summarizes them with Gemini AI, and dispatches SMS alerts via an asynchronous retry-enabled notification queue.
 
 ---
 
 ## 🌟 Features
 
 * **Point A to Point B Street Address Subscriptions**: Users subscribe to precise origin and destination street addresses. Address geocoding (OpenStreetMap / Nominatim) and turn-by-turn routing (OSRM) build an encoded polyline path.
-* **Spatial Polyline Distance Buffer & Bounding Box Rejection**: Fast $O(1)$ bounding box pre-filtering followed by exact Haversine/geodesic distance calculations from CHP incident coordinates to the commute polyline path.
+* **Spatial Polyline Distance Buffer & Bounding Box Rejection**: Fast $O(1)$ bounding box pre-filtering followed by exact Haversine/geodesic distance calculations from incident coordinates to the commute polyline path.
 * **Caltrans API Client Handler ([backend/caltrans_client.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/caltrans_client.py))**: Direct XML/KML HTTP feed parser (`https://quickmap.dot.ca.gov/data/chp-only.kml`) replacing heavy Selenium browser overhead (< 0.1s execution time).
 * **Asynchronous Notification Queue with Retries & DLQ ([backend/notification_queue.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/notification_queue.py))**: Decoupled task queue supporting exponential backoff retries and Dead Letter Queue (DLQ) isolation for failed SMS dispatches.
 * **Real-Time Next.js Dashboard**: Modern web application to register routes, set active commute hours (e.g. `07:00` - `09:00`), and manage phone numbers.
 * **Database & Auth (Auth.js / Prisma)**: PostgreSQL + Prisma schema storing User accounts, RouteSubscriptions, and NotifiedIncidents logs.
 * **AI-Powered Incident Summaries with Caching**: Utilizes `gemini-2.5-flash` with in-memory summary caching (`_SUMMARY_CACHE`) to condense detailed dispatch logs into concise SMS notifications without duplicate LLM API calls.
-* **Pytest Testing Suite**: Fully configured pytest suite (**23 passed in 7.41s**) covering Caltrans API parsing, area filtering, notification queue retries, DLQ handling, bounding box rejection, and street address route matching.
+* **Pytest Testing Suite**: Fully configured pytest suite (**24 passed in 5.10s**) covering Caltrans API parsing, area filtering, notification queue retries, DLQ handling, bounding box rejection, and street address route matching.
 
 ---
 
@@ -24,14 +24,14 @@ A full-stack Next.js and Python web application that dynamically checks **Caltra
   * `prisma/schema.prisma`: Data models for User, Account, Session, RouteSubscription, and NotifiedIncident.
   * `src/app/`: Next.js App Router layout, authentication, and subscription UI.
 * **`backend/`**: Background Python worker containing:
-  * `main.py`: Main execution loop checking active subscriptions, ingesting CHP feeds via Caltrans client, and queuing alerts.
+  * `main.py`: Main execution loop checking active subscriptions, ingesting feeds via Caltrans client, and queuing alerts.
   * `caltrans_client.py`: API Handler fetching and parsing live Caltrans QuickMap XML/KML feeds.
   * `notification_queue.py`: Task queue for SMS dispatching with exponential backoff retries and Dead Letter Queue.
   * `scrapper.py`: Deprecated legacy wrapper forwarding calls to `caltrans_client.py`.
   * `route_generator.py`: Geocodes street addresses and fetches OSRM driving polylines.
   * `route_utils.py`: Decodes polylines, computes bounding box filters, and calculates spatial distances.
   * `models.py`: SQLAlchemy database models connected to PostgreSQL.
-  * `tests/`: Pytest test suite (`test_caltrans_client.py`, `test_notification_queue.py`, `test_routes.py`).
+  * `tests/`: Pytest test suite (`test_caltrans_client.py`, `test_notification_queue.py`, `test_routes.py`, `test_full_e2e.py`).
 
 ---
 
@@ -57,14 +57,14 @@ The database will run on `127.0.0.1:5433` (avoiding port collisions with local d
 
 Create `backend/.env`:
 ```env
-DATABASE_URL="postgresql://postgres:postgres@localhost:5433/chbdb"
+DATABASE_URL="postgresql://postgres:postgres@localhost:5433/incidentsdb"
 GEMINI_API_KEY="dummy_gemini"
 TWILIO_PHONE_NUMBER="+15550000000"
 ```
 
 Create `frontend/.env`:
 ```env
-DATABASE_URL="postgresql://postgres:postgres@localhost:5433/chbdb"
+DATABASE_URL="postgresql://postgres:postgres@localhost:5433/incidentsdb"
 NEXTAUTH_SECRET="super-secret-key"
 NEXTAUTH_URL="http://localhost:3000"
 ```
@@ -89,18 +89,9 @@ Access the dashboard at [http://localhost:3000](http://localhost:3000).
 ### Step 4: Backend Worker Setup & Execution
 ```bash
 cd backend
-python -m venv venv
-# On Windows PowerShell:
-.\venv\Scripts\Activate.ps1
-# On Linux/macOS:
-source venv/bin/activate
-
-pip install -r requirements.txt
-```
-
-Start the Python worker:
-```bash
-python main.py
+uv venv
+uv sync
+uv run python main.py
 ```
 
 ---
@@ -110,7 +101,7 @@ python main.py
 Run all unit and integration tests:
 ```bash
 cd backend
-pytest
+uv run pytest
 ```
 
 ---

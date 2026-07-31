@@ -13,7 +13,7 @@ def test_enqueue_and_successful_process():
         return True
 
     queue = NotificationQueue(sender_func=mock_sender)
-    task = queue.enqueue("+15551234567", "Test CHP Alert")
+    task = queue.enqueue("+15551234567", "Test Incident Alert")
     assert task.status == TaskStatus.PENDING
     assert len(queue.pending_tasks) == 1
 

@@ -100,7 +100,7 @@ def check_and_notify():
                         is_update = notified_record is not None
                         print(f"*** Match found for {user} ({sub.origin}->{sub.destination}): Incident {inc['number']} (Update: {is_update})")
                         summary = summarize_incident(inc)
-                        prefix = "CHP UPDATE Alert" if is_update else "CHP Alert"
+                        prefix = "Incident UPDATE Alert" if is_update else "Incident Alert"
                         message = f"{prefix} for {sub.origin}->{sub.destination}: {summary}"
                         
                         # Enqueue outbound SMS alert to notification queue with retries & DLQ handling
@@ -122,7 +122,7 @@ def check_and_notify():
     global_notification_queue.process_queue()
 
 if __name__ == "__main__":
-    print("Starting CHP Notification Worker...")
+    print("Starting Incident Notification Worker...")
     while True:
         try:
             check_and_notify()

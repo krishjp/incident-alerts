@@ -4,7 +4,7 @@ from caltrans_client import fetch_caltrans_incidents
 
 def scrape_chp_area(area_name: str = None) -> List[Dict[str, Any]]:
     """
-    DEPRECATED: Selenium web scraping from `scrapper.py` has been deprecated.
+    DEPRECATED: Legacy web scraping has been deprecated.
     
     Use `caltrans_client.CaltransAPIClient` or `fetch_caltrans_incidents()` instead.
     This function forwards calls to `caltrans_client.fetch_caltrans_incidents` for backwards compatibility.

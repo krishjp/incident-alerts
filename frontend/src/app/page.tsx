@@ -15,7 +15,7 @@ export default async function Home() {
     <main className="flex min-h-screen flex-col items-center justify-center p-24 bg-gradient-to-b from-slate-900 to-slate-800 text-white">
       <div className="z-10 max-w-5xl w-full items-center justify-between font-mono text-sm flex flex-col gap-6 text-center">
         <h1 className="text-6xl font-extrabold tracking-tight">
-          CHP Commute Alerts
+          Commute Incident Alerts
         </h1>
         <p className="text-xl text-slate-300 max-w-2xl">
           Get real-time text message alerts when accidents or delays happen on your exact route, only during the times you care about.

@@ -1,12 +1,29 @@
+# Python Virtual Environments
+.venv/
 venv/
+env/
+ENV/
+*.venv/
+
+# Environment Variables & Secrets
 .env
+.env*.local
+
+# Python Caches & Compiled Bytecode
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+coverage/
+
+# IDE & System Files
 .DS_Store
 .idea/
 .vscode/
 *.log
-coverage/
-*.json
+
+# Project Specific Caches
 .codegraph/
-.pytest_cache/

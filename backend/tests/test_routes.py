@@ -57,7 +57,7 @@ def test_incident_far_from_route(sample_route_polyline):
     incident_lat_lon = "34.1478 -118.1445"
     assert not is_within_range(incident_lat_lon, sample_route_polyline, max_miles=2.0)
 
-def test_chp_colon_formatted_lat_lon(sample_route_polyline):
+def test_colon_formatted_lat_lon(sample_route_polyline):
     incident_lat_lon = "34.0905:-118.4685"
     assert is_within_range(incident_lat_lon, sample_route_polyline, max_miles=1.0)
 

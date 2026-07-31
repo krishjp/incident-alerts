@@ -1,13 +1,13 @@
-# Project Handoff Document: CHP Incident Alerts 🚗⚠️
+# Project Handoff Document: Incident Alerts 🚗⚠️
 
 **Last Updated:** July 31, 2026
 
 ## 🎯 Project Goals
-The goal of **CHP Incident Alerts** is to provide real-time, automated traffic incident alerts to users based on their specific commute routes and active hours.
+The goal of **Incident Alerts** is to provide real-time, automated traffic incident alerts to users based on their specific commute routes and active hours.
 
 Key capabilities:
 1. **Route Subscriptions**: Users configure specific routes (e.g., origin/destination/polyline), areas (e.g., "Los Angeles"), phone numbers, and time windows (e.g., `07:00` - `09:00`).
-2. **Real-Time Caltrans API Client**: Python backend worker fetches live Caltrans QuickMap / CHP CAD traffic feeds via fast lightweight XML/KML HTTP endpoints ([backend/caltrans_client.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/caltrans_client.py)), replacing legacy headless Selenium scraping.
+2. **Real-Time Caltrans API Client**: Python backend worker fetches live Caltrans QuickMap traffic feeds via fast lightweight XML/KML HTTP endpoints ([backend/caltrans_client.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/caltrans_client.py)), replacing legacy headless Selenium scraping.
 3. **Spatial & Temporal Matching**: Evaluates live incident lat/lon coordinates against polyline route boundaries within the scheduled time windows using an $O(1)$ bounding box pre-filter and Haversine/geodesic distance checks.
 4. **AI-Powered Incident Summarization**: Generates brief, digestible SMS summaries using Gemini (`gemini-2.5-flash`) with an in-memory summary cache (`_SUMMARY_CACHE`) and fallback text generation.
 5. **Asynchronous Notification Queue with Retries & DLQ**: Enqueues outbound SMS alerts to an asynchronous queue ([backend/notification_queue.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/notification_queue.py)) with exponential backoff retries and Dead Letter Queue (DLQ) isolation for failed dispatches.
@@ -27,7 +27,7 @@ Key capabilities:
   - Reduced feed fetch & parsing time from 15+ seconds (with Chrome dependency) to **< 0.1 seconds** using native Python standard libraries (`urllib`, `xml.etree.ElementTree`, `re`).
   - Extracted 100% guaranteed latitude/longitude coordinates, incident IDs, title types, timestamped locations, area mappings, and raw dispatch logs.
 - [x] **Deprecation of Legacy Scraper ([backend/scrapper.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/scrapper.py))**:
-  - Deprecated legacy `scrape_chp_area()` function with a `DeprecationWarning` and fallback wrapper forwarding to `caltrans_client.fetch_caltrans_incidents()`.
+  - Deprecated legacy scraping functions with a `DeprecationWarning` and fallback wrapper forwarding to `caltrans_client.fetch_caltrans_incidents()`.
 - [x] **Asynchronous Notification Queue & Dead Letter Queue ([backend/notification_queue.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/notification_queue.py))**:
   - Implemented decoupled `NotificationTask` queue replacing inline synchronous SMS sending in `main.py`.
   - Added exponential backoff retry scheduling (`backoff_factor * 2^(attempts-1)`).
@@ -38,8 +38,8 @@ Key capabilities:
   - Implemented Gemini AI summary caching (`_SUMMARY_CACHE`) in [backend/main.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/main.py#L17-L45) to eliminate duplicate LLM API calls for identical incidents across multiple user subscriptions.
   - Incident fingerprint tracking via `NotifiedIncident` table to prevent duplicate notifications.
 - [x] **Testing & Verification Suite**:
-  - Expanded Pytest suite across three test modules ([backend/tests/test_routes.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_routes.py), [backend/tests/test_caltrans_client.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_caltrans_client.py), [backend/tests/test_notification_queue.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_notification_queue.py)).
-  - Verified 23 automated tests covering bounding box fast rejection, summary caching, geocoded route matching, live feed fetching, retry backoff, and DLQ handling (**23 passed in 7.41s**).
+  - Expanded Pytest suite across four test modules ([backend/tests/test_routes.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_routes.py), [backend/tests/test_caltrans_client.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_caltrans_client.py), [backend/tests/test_notification_queue.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_notification_queue.py), [backend/tests/test_full_e2e.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_full_e2e.py)).
+  - Verified 24 automated tests covering bounding box fast rejection, summary caching, geocoded route matching, live feed fetching, retry backoff, and DLQ handling (**24 passed in 5.10s**).
 
 ---
 
