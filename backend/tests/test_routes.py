@@ -67,7 +67,9 @@ def test_bounding_box_fast_rejection(sample_route_polyline):
     assert not is_within_range(far_away_incident, sample_route_polyline, max_miles=5.0)
 
 def test_summary_caching():
-    from main import summarize_incident, _SUMMARY_CACHE
+    from main import summarize_incident
+    from cache_handler import global_incident_cache
+
     test_data = {
         "number": "9999",
         "location": "I-405 S",
@@ -75,10 +77,10 @@ def test_summary_caching():
         "details": {"full_text_blob": "Lanes blocked due to debris."}
     }
     sum1 = summarize_incident(test_data)
-    cache_key = ("9999", str(test_data["details"]))
-    assert cache_key in _SUMMARY_CACHE
+    cached = global_incident_cache.get_summary("9999", str(test_data["details"]))
+    assert cached is not None
     sum2 = summarize_incident(test_data)
-    assert sum1 == sum2
+    assert sum1 == sum2 == cached
 
 
 

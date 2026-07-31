@@ -9,16 +9,16 @@ Key capabilities:
 1. **Route Subscriptions**: Users configure specific routes (e.g., origin/destination/polyline), areas (e.g., "Los Angeles"), phone numbers, and time windows (e.g., `07:00` - `09:00`).
 2. **Real-Time Caltrans API Client**: Python backend worker fetches live Caltrans QuickMap traffic feeds via fast lightweight XML/KML HTTP endpoints ([backend/caltrans_client.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/caltrans_client.py)), replacing legacy headless Selenium scraping.
 3. **Spatial & Temporal Matching**: Evaluates live incident lat/lon coordinates against polyline route boundaries within the scheduled time windows using an $O(1)$ bounding box pre-filter and Haversine/geodesic distance checks.
-4. **AI-Powered Incident Summarization**: Generates brief, digestible SMS summaries using Gemini (`gemini-2.5-flash`) with an in-memory summary cache (`_SUMMARY_CACHE`) and fallback text generation.
+4. **Redis-Backed AI Summary Caching**: Uses Redis ([backend/cache_handler.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/cache_handler.py)) with 24-hour TTL expiration (and fallback in-memory dictionary) to eliminate redundant Gemini AI calls for identical incidents across worker nodes.
 5. **Asynchronous Notification Queue with Retries & DLQ**: Enqueues outbound SMS alerts to an asynchronous queue ([backend/notification_queue.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/notification_queue.py)) with exponential backoff retries and Dead Letter Queue (DLQ) isolation for failed dispatches.
 
 ---
 
 ## ✅ Completed Tasks
 
-- [x] **Project Structure & Architecture**: Established full-stack structure with Next.js frontend, Python backend worker, and Docker PostgreSQL container.
+- [x] **Project Structure & Architecture**: Established full-stack structure with Next.js frontend, Python backend worker, PostgreSQL database, and Redis cache.
 - [x] **Database & Infrastructure**:
-  - `docker-compose.yml` created and running PostgreSQL on port `5433` (container `incident-alerts-postgres-1`).
+  - `docker-compose.yml` updated with PostgreSQL (port `5433`) and Redis (port `6379`).
   - `.env` files generated for both `frontend/` and `backend/`.
   - Prisma schema (`prisma/schema.prisma`) defined for Users, RouteSubscriptions, Accounts, Sessions, and NotifiedIncidents.
   - SQLAlchemy models (`backend/models.py`) aligned with Prisma schema tables.
@@ -26,6 +26,9 @@ Key capabilities:
   - Replaced legacy headless Selenium browser automation with a dedicated `CaltransAPIClient` fetching XML/KML feed data from `https://quickmap.dot.ca.gov/data/chp-only.kml`.
   - Reduced feed fetch & parsing time from 15+ seconds (with Chrome dependency) to **< 0.1 seconds** using native Python standard libraries (`urllib`, `xml.etree.ElementTree`, `re`).
   - Extracted 100% guaranteed latitude/longitude coordinates, incident IDs, title types, timestamped locations, area mappings, and raw dispatch logs.
+- [x] **Redis Summary Cache Handler ([backend/cache_handler.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/cache_handler.py))**:
+  - Implemented `IncidentCache` using Redis key-value storage with 24-hour TTL (`EXPIRE`), ensuring shared cache state across distributed workers and surviving process restarts.
+  - Includes graceful fallback to in-memory caching when Redis is offline.
 - [x] **Deprecation of Legacy Scraper ([backend/scrapper.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/scrapper.py))**:
   - Deprecated legacy scraping functions with a `DeprecationWarning` and fallback wrapper forwarding to `caltrans_client.fetch_caltrans_incidents()`.
 - [x] **Asynchronous Notification Queue & Dead Letter Queue ([backend/notification_queue.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/notification_queue.py))**:
@@ -35,11 +38,10 @@ Key capabilities:
 - [x] **Worker & Spatial Evaluation Optimizations**:
   - Built [backend/route_generator.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/route_generator.py) using Nominatim OpenStreetMap geocoding and OSRM turn-by-turn routing.
   - Added $O(1)$ bounding box pre-filter (`get_bounding_box`) in [backend/route_utils.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/route_utils.py#L68-L86) for fast spatial rejection of distant incidents before running distance loops.
-  - Implemented Gemini AI summary caching (`_SUMMARY_CACHE`) in [backend/main.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/main.py#L17-L45) to eliminate duplicate LLM API calls for identical incidents across multiple user subscriptions.
   - Incident fingerprint tracking via `NotifiedIncident` table to prevent duplicate notifications.
 - [x] **Testing & Verification Suite**:
-  - Expanded Pytest suite across four test modules ([backend/tests/test_routes.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_routes.py), [backend/tests/test_caltrans_client.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_caltrans_client.py), [backend/tests/test_notification_queue.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_notification_queue.py), [backend/tests/test_full_e2e.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_full_e2e.py)).
-  - Verified 24 automated tests covering bounding box fast rejection, summary caching, geocoded route matching, live feed fetching, retry backoff, and DLQ handling (**24 passed in 5.10s**).
+  - Expanded Pytest suite across five test modules ([backend/tests/test_cache_handler.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_cache_handler.py), [backend/tests/test_routes.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_routes.py), [backend/tests/test_caltrans_client.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_caltrans_client.py), [backend/tests/test_notification_queue.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_notification_queue.py), [backend/tests/test_full_e2e.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_full_e2e.py)).
+  - Verified 26 automated tests covering Redis cache set/get/hashing, bounding box fast rejection, summary caching, geocoded route matching, live feed fetching, retry backoff, and DLQ handling (**26 passed in 8.5s**).
 
 ---
 
@@ -48,7 +50,7 @@ Key capabilities:
 ### 1. Scaling & Infrastructure Remediation
 - **Distributed Worker Queue Architecture**:
   - *Current State*: In-memory task queue in `notification_queue.py` and sequential evaluation in `main.py`.
-  - *Next Step*: Scale out to distributed task queues (e.g., Celery + Redis or AWS SQS) to evaluate spatial subscriptions concurrently across worker nodes.
+  - *Next Step*: Scale out to distributed task queues (e.g., Celery + Redis Streams) to evaluate spatial subscriptions concurrently across worker nodes.
 - **External API Rate Limiting & Polyline Caching**:
   - *Current Flaw*: Direct calls to public Nominatim and OSRM routing servers can trigger 429 Rate Limit errors under concurrent route creation.
   - *Next Step*: Cache route polylines permanently in PostgreSQL upon subscription creation and introduce a self-hosted OSRM Docker container or fallback router.

@@ -13,21 +13,20 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY != "dummy
 # Mock Twilio
 TWILIO_PHONE = os.getenv("TWILIO_PHONE_NUMBER")
 
-# In-memory summary cache to prevent duplicate Gemini API calls for the same incident across multiple users
-_SUMMARY_CACHE = {}
+from cache_handler import global_incident_cache
 
 def summarize_incident(incident_data):
     inc_num = incident_data.get('number', 'unknown')
     raw_details = str(incident_data.get('details', ''))
     
-    # Return cached summary if details haven't changed
-    cache_key = (inc_num, raw_details)
-    if cache_key in _SUMMARY_CACHE:
-        return _SUMMARY_CACHE[cache_key]
+    # Check Redis/in-memory cache for existing summary with TTL
+    cached_summary = global_incident_cache.get_summary(inc_num, raw_details)
+    if cached_summary:
+        return cached_summary
 
     if not gemini_client:
         summary = f"[Mock Summary] Incident {inc_num} at {incident_data['location']}. Details: {incident_data['details']['full_text_blob'][:50]}..."
-        _SUMMARY_CACHE[cache_key] = summary
+        global_incident_cache.set_summary(inc_num, raw_details, summary)
         return summary
     
     try:
@@ -40,7 +39,7 @@ def summarize_incident(incident_data):
         print("Gemini error:", e)
         summary = f"Incident at {incident_data['location']}: {incident_data['type']}"
 
-    _SUMMARY_CACHE[cache_key] = summary
+    global_incident_cache.set_summary(inc_num, raw_details, summary)
     return summary
 
 from models import get_active_subscriptions, SessionLocal, NotifiedIncident
