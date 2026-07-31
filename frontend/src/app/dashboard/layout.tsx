@@ -21,7 +21,7 @@ export default async function DashboardLayout({
             <aside className="w-full md:w-64 bg-slate-900 text-slate-300 p-6 flex flex-col h-auto md:min-h-screen border-r border-slate-800">
                 <div className="flex items-center gap-2 text-white mb-8">
                     <BellRing className="w-6 h-6 text-emerald-500" />
-                    <span className="font-bold text-xl tracking-tight">CHP Alerts</span>
+                    <span className="font-bold text-xl tracking-tight">Incident Alerts</span>
                 </div>
                 <nav className="flex-1 flex flex-col gap-2">
                     <Link href="/dashboard" className="px-4 py-2 rounded-lg bg-emerald-500/10 text-emerald-400 font-medium">

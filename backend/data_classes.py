@@ -3,14 +3,14 @@ from typing import List, Optional
 
 @dataclass
 class IncidentDetails:
-    """Represents the deep-dive information found in the detail panel."""
+    """Represents the detailed information found in the incident log."""
     raw_log: List[str] = field(default_factory=list)
-    lat_lon: Optional[str] = None  # Scraped from the blue link in your screenshot
+    lat_lon: Optional[str] = None
     full_text_blob: str = ""
 
 @dataclass
 class Incident:
-    """Represents a single row from the main CHP incident table."""
+    """Represents a single traffic incident record."""
     number: str
     timestamp: str
     type: str

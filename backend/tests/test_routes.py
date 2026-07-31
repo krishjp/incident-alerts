@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import pytest
 from route_generator import fetch_osrm_polyline
 from route_utils import encode_polyline, is_within_range_pure as is_within_range
-from scrapper import scrape_chp_area
+from caltrans_client import fetch_caltrans_incidents
 
 # --- Fixtures ---
 
@@ -57,7 +57,7 @@ def test_incident_far_from_route(sample_route_polyline):
     incident_lat_lon = "34.1478 -118.1445"
     assert not is_within_range(incident_lat_lon, sample_route_polyline, max_miles=2.0)
 
-def test_chp_colon_formatted_lat_lon(sample_route_polyline):
+def test_colon_formatted_lat_lon(sample_route_polyline):
     incident_lat_lon = "34.0905:-118.4685"
     assert is_within_range(incident_lat_lon, sample_route_polyline, max_miles=1.0)
 
@@ -144,7 +144,7 @@ def test_off_route_anaheim_incident(golf_commute_route):
 @pytest.mark.network
 def test_live_chp_scrape_against_route(golf_commute_route):
     polyline_str = golf_commute_route["polyline"]
-    incidents = scrape_chp_area("Los Angeles")
+    incidents = fetch_caltrans_incidents("Los Angeles")
     
     assert isinstance(incidents, list)
     assert len(incidents) > 0
