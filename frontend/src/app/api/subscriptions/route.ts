@@ -40,8 +40,47 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Map API Error" }, { status: 500 });
         }
     } else {
-        // If testing without key, we can use a mock polyline (LA point to LA point)
-        encodedPolyline = "}l|nDklyqU?b@?^@XAh@Ed@S^y@nBk@dBa@|ASf@Sn@k@hByBnHO\\_AlDEVO`@o@tByA|FmBbHMVg@tBMn@Gl@Cz@?zBBxEJvDDlBBhBCtBOdCOtAQfAcB|HsAnHSz@]zBMjAOtAUtB_@pEUzBYxBMlAUnBmA`KUxAWfBAd@Bt@f@jFjApLjCdXhAxJtA`M~Dv_@"; // Approx 405 mock
+        // Use OSRM turn-by-turn driving route via OpenStreetMap Nominatim geocoding
+        try {
+            const headers = { "User-Agent": "IncidentAlerts/1.0" };
+            
+            // Geocode origin
+            const originRes = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(origin)}&format=json&limit=1`, { headers });
+            const originData = await originRes.json();
+            if (!originData || originData.length === 0) {
+                return NextResponse.json({ error: `Could not geocode origin: ${origin}` }, { status: 400 });
+            }
+            const originLat = parseFloat(originData[0].lat);
+            const originLon = parseFloat(originData[0].lon);
+
+            // Geocode destination
+            const destRes = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(destination)}&format=json&limit=1`, { headers });
+            const destData = await destRes.json();
+            if (!destData || destData.length === 0) {
+                return NextResponse.json({ error: `Could not geocode destination: ${destination}` }, { status: 400 });
+            }
+            const destLat = parseFloat(destData[0].lat);
+            const destLon = parseFloat(destData[0].lon);
+
+            // Fetch driving polyline from OSRM
+            const osrmUrl = `http://router.project-osrm.org/route/v1/driving/${originLon},${originLat};${destLon},${destLat}?overview=full&geometries=polyline`;
+            const osrmRes = await fetch(osrmUrl, { headers });
+            const osrmData = await osrmRes.json();
+
+            if (osrmData.routes && osrmData.routes.length > 0) {
+                // OSRM returns Google polyline format string when geometries=polyline
+                encodedPolyline = osrmData.routes[0].geometry;
+            } else {
+                return NextResponse.json({ error: "No road driving route found between specified locations." }, { status: 400 });
+            }
+        } catch (e: any) {
+            console.error("OSRM Routing Error:", e);
+            const errorMessage = e instanceof Error ? e.message : "Routing service unavailable";
+            return NextResponse.json(
+                { error: `Routing service error: ${errorMessage}. Please check your addresses or try again later.` },
+                { status: 503 }
+            );
+        }
     }
 
     const sub = await prisma.routeSubscription.create({
