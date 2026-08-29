@@ -45,10 +45,26 @@ class NotificationTask:
 def default_twilio_sender(to_phone: str, message: str) -> bool:
     """
     Default Twilio SMS dispatch function.
-    Uses mock console logging if real Twilio credentials are not configured.
+    Sends a real SMS via the Twilio REST API when TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN
+    are configured with non-placeholder values; otherwise falls back to mock console logging.
     """
     twilio_phone = os.getenv("TWILIO_PHONE_NUMBER", "+15550000000")
-    print(f"\n[DISPATCH SMS to {to_phone}]")
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+
+    if account_sid and auth_token and account_sid != "dummy_sid" and auth_token != "dummy_token":
+        from twilio.rest import Client
+        from twilio.base.exceptions import TwilioRestException
+
+        try:
+            client = Client(account_sid, auth_token)
+            client.messages.create(body=message, from_=twilio_phone, to=to_phone)
+            return True
+        except TwilioRestException as e:
+            print(f"[Twilio Error] Failed to send SMS to {to_phone}: {e}")
+            return False
+
+    print(f"\n[MOCK DISPATCH SMS to {to_phone}]")
     print(f"From: {twilio_phone}")
     print(f"Message: {message}\n")
     return True
