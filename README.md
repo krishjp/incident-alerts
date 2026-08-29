@@ -32,6 +32,7 @@ A full-stack Next.js and Python web application that dynamically checks **Caltra
   * `route_generator.py`: Geocodes street addresses and fetches OSRM driving polylines.
   * `route_utils.py`: Decodes polylines, computes bounding box filters, and calculates spatial distances.
   * `models.py`: SQLAlchemy database models connected to PostgreSQL.
+  * `fixtures/injected_incidents.kml`: Editable sample feed for local testing with injected incidents.
   * `tests/`: Pytest test suite (`test_cache_handler.py`, `test_caltrans_client.py`, `test_notification_queue.py`, `test_routes.py`, `test_full_e2e.py`).
 
 ---
@@ -107,6 +108,22 @@ Run all unit and integration tests:
 cd backend
 uv run pytest
 ```
+
+---
+
+### Step 6: Local Testing with Injected Incidents
+
+To exercise the full worker pipeline (spatial matching, dedup/update alerts, Gemini summaries, the
+notification queue) without waiting for a real Caltrans incident, point the backend at a local KML fixture
+instead of the live feed:
+```env
+# backend/.env
+CALTRANS_FEED_URL="file:///absolute/path/to/backend/fixtures/injected_incidents.kml"
+```
+Edit `backend/fixtures/injected_incidents.kml` to add incidents, and ensure a matching `RouteSubscription`
+exists (active window, matching `area`, polyline within 5 miles). See
+[backend/README.md § Local Testing with Injected Incidents](backend/README.md#-local-testing-with-injected-incidents)
+for full requirements and steps.
 
 ---
 

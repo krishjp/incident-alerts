@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Sample KML feed for local testing with injected incidents.
+
+  Point backend/.env's CALTRANS_FEED_URL at this file (as a file:// URL) to make
+  the worker read these fixed incidents instead of the live Caltrans feed. See
+  "Local Testing with Injected Incidents" in backend/README.md for full steps.
+
+  To add your own incident: copy a <Placemark> block below and edit:
+    - "CHP Incident <NUMBER>" in iw-header-left: the area-code letters in NUMBER
+      (LA, SA, IN, GG, SD, OR, CC) drive area matching — see AREA_PREFIXES in
+      caltrans_client.py. Must match a RouteSubscription.area to be picked up.
+    - <coordinates>: lon,lat,altitude — must fall within max_miles (default 5)
+      of a subscribed route's polyline for is_within_range_pure to match it.
+    - iw-title / iw-text: free-text incident type, timestamp, and location.
+
+  To test re-notification behavior:
+    - Editing iw-title/iw-text/raw log lines on a re-run should trigger an
+      "UPDATE" alert (the fingerprint in NotifiedIncident.state changes).
+    - Re-running unchanged should NOT re-alert.
+    - Deleting a <Placemark> entirely (or renaming its incident number) and
+      re-running simulates the incident being resolved/cleared — the worker
+      should send exactly one "RESOLVED" alert for it, then stay silent.
+-->
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+<name>Injected Test Incidents</name>
+<Placemark>
+  <name> </name>
+  <description><![CDATA[
+<div class="infowindow-content">
+    <div class="iw-header">
+        <div class="iw-header-left">CHP Incident 260829LA0100</div>
+    </div>
+    <div class="iw-body">
+        <h2 class="iw-title">1183-Trfc Collision-Unkn Inj</h2>
+        <p class="iw-text">Aug 29 2026 08:00AM <br> I-405 S / Wilshire Blvd</p>
+        <p class="iw-text">Aug 29 2026 08:01AM [2] VEHICLE OFF SHOULDER<br />Aug 29 2026 08:00AM [1] 2 VEH TC</p>
+    </div>
+</div>
+  ]]></description>
+  <Point><coordinates>-118.4550,34.0500,0</coordinates></Point>
+</Placemark>
+<Placemark>
+  <name> </name>
+  <description><![CDATA[
+<div class="infowindow-content">
+    <div class="iw-header">
+        <div class="iw-header-left">CHP Incident 260829LA0101</div>
+    </div>
+    <div class="iw-body">
+        <h2 class="iw-title">1125-Trfc Hazard</h2>
+        <p class="iw-text">Aug 29 2026 08:05AM <br> I-405 N / Sepulveda Blvd</p>
+        <p class="iw-text">Aug 29 2026 08:05AM [1] DEBRIS IN ROADWAY</p>
+    </div>
+</div>
+  ]]></description>
+  <Point><coordinates>-118.4670,34.0520,0</coordinates></Point>
+</Placemark>
+<Placemark>
+  <name> </name>
+  <description><![CDATA[
+<div class="infowindow-content">
+    <div class="iw-header">
+        <div class="iw-header-left">CHP Incident 260829SA0100</div>
+    </div>
+    <div class="iw-body">
+        <h2 class="iw-title">1182-Trfc Collision-No Inj</h2>
+        <p class="iw-text">Aug 29 2026 08:10AM <br> Watt Ave / I-80</p>
+        <p class="iw-text">Aug 29 2026 08:10AM [1] MINOR FENDER BENDER</p>
+    </div>
+</div>
+  ]]></description>
+  <Point><coordinates>-121.3800,38.6000,0</coordinates></Point>
+</Placemark>
+<Placemark>
+  <name> </name>
+  <description><![CDATA[
+<div class="infowindow-content">
+    <div class="iw-header">
+        <div class="iw-header-left">CHP Incident 260829SD0100</div>
+    </div>
+    <div class="iw-body">
+        <h2 class="iw-title">1179-Trfc Collision-1141 Enrt</h2>
+        <p class="iw-text">Aug 29 2026 08:15AM <br> I-5 S / Genesee Ave</p>
+        <p class="iw-text">Aug 29 2026 08:15AM [1] AMBULANCE ENRT</p>
+    </div>
+</div>
+  ]]></description>
+  <Point><coordinates>-117.2110,32.8620,0</coordinates></Point>
+</Placemark>
+</Document>
+</kml>

@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, String, Boolean, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+from crypto_utils import decrypt_phone
+
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -39,6 +41,8 @@ class NotifiedIncident(Base):
     __tablename__ = "NotifiedIncident"
     id = Column(String, primary_key=True)
     state = Column(String)
+    createdAt = Column(DateTime, default=datetime.utcnow)
+    updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 def get_active_subscriptions():
     db = SessionLocal()
     try:
@@ -67,7 +71,7 @@ def get_active_subscriptions():
             if in_window:
                 active_subs.append({
                     "sub": sub,
-                    "phone": user.phone,
+                    "phone": decrypt_phone(user.phone),
                     "user": user.name or "User"
                 })
         return active_subs

@@ -916,6 +916,7 @@ name = "incident-alerts-backend"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "geopy" },
     { name = "google-genai" },
     { name = "httpx" },
@@ -940,6 +941,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=42.0.0" },
     { name = "geopy", specifier = ">=2.4.0" },
     { name = "google-genai", specifier = ">=1.0.0" },
     { name = "httpx", specifier = ">=0.27.0" },

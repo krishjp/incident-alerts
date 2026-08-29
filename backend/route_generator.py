@@ -1,5 +1,12 @@
+import os
 import requests
 from route_utils import encode_polyline
+
+# Defaults to the public OSRM demo server, which has no SLA and rate-limits
+# aggressively — fine for development, not for real traffic. Point it at a
+# self-hosted OSRM instance (see docker-compose.yml's `osrm` service) in any
+# environment with real users.
+OSRM_URL = os.getenv("OSRM_URL", "http://router.project-osrm.org")
 
 def geocode_address(address_str: str):
     """Geocodes a street address to (lat, lon) using OpenStreetMap Nominatim."""
@@ -28,7 +35,7 @@ def fetch_osrm_polyline(origin_address: str, dest_address: str):
     dest_lat, dest_lon = geocode_address(dest_address)
 
     # OSRM expects coordinates in lon,lat order: lon1,lat1;lon2,lat2
-    osrm_url = f"http://router.project-osrm.org/route/v1/driving/{origin_lon},{origin_lat};{dest_lon},{dest_lat}"
+    osrm_url = f"{OSRM_URL}/route/v1/driving/{origin_lon},{origin_lat};{dest_lon},{dest_lat}"
     params = {
         "overview": "full",
         "geometries": "geojson"

@@ -1,3 +1,4 @@
+import os
 import re
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -143,8 +144,11 @@ class CaltransAPIClient:
         return incidents_list
 
 
-# Singleton / Convenience helper function
-_client = CaltransAPIClient()
+# Singleton / Convenience helper function.
+# CALTRANS_FEED_URL lets local testing point at a fixture KML file (e.g.
+# "file:///abs/path/to/injected_incidents.kml") instead of the live feed —
+# urllib.request.urlopen natively supports file:// URLs. Unset in production.
+_client = CaltransAPIClient(feed_url=os.getenv("CALTRANS_FEED_URL", CaltransAPIClient.DEFAULT_KML_URL))
 
 def fetch_caltrans_incidents(area_name: Optional[str] = None) -> List[Dict[str, Any]]:
     """Helper function to fetch Caltrans incidents using the API client."""

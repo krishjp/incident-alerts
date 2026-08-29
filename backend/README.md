@@ -25,6 +25,7 @@ A Python-based automation worker that ingests live incident data feeds from **Ca
 * **`route_utils.py`**: Handles polyline decoding, bounding box pre-filtering, and geodesic distance evaluation.
 * **`main.py`**: Background worker loop checking active PostgreSQL subscriptions, processing feeds, and managing notification queues.
 * **`models.py`**: Defines SQLAlchemy models (`User`, `RouteSubscription`, `NotifiedIncident`) aligned with Prisma schema tables.
+* **`fixtures/injected_incidents.kml`**: Editable sample KML feed for local testing — see [Local Testing with Injected Incidents](#-local-testing-with-injected-incidents) below.
 * **`tests/`**: Pytest test suite covering API feeds, notification queue retries/DLQ, and route matching (`24 passed in 5.10s`).
 
 ---
@@ -46,3 +47,63 @@ A Python-based automation worker that ingests live incident data feeds from **Ca
    ```bash
    uv run pytest
    ```
+
+---
+
+## 🧪 Local Testing with Injected Incidents
+
+The worker never takes incidents as direct input — it always calls `caltrans_client.fetch_caltrans_incidents()`,
+which fetches from a KML URL. `fetch_raw_feed()` uses `urllib.request.urlopen`, which also understands
+`file://` URLs, so pointing the feed at a local fixture file is enough to fully exercise the real
+`check_and_notify()` pipeline (spatial matching, dedup/update fingerprinting, Gemini summarization, the
+notification queue) end-to-end without hitting the live Caltrans feed.
+
+### Requirements
+
+- Postgres + Redis running (`docker compose up -d`) and `backend/.env` / `frontend/.env` configured per the
+  root [README](../README.md#step-2-environment-configuration).
+- At least one `RouteSubscription` row in the database:
+  - `isActive = true`
+  - `startTime`/`endTime` window covers the current PST time (or widen it, e.g. `"00:00"`–`"23:59"`, for testing)
+  - `area` matches the area your injected incident resolves to (see `AREA_PREFIXES` in `caltrans_client.py`,
+    e.g. an incident number containing `LA` → `"Los Angeles"`)
+  - `polyline` passes within 5 miles (the `max_miles` default in `is_within_range_pure`) of the incident's
+    coordinates — easiest via the frontend UI at `http://localhost:3000`, using an origin/destination that
+    geocodes near where you want the incident to land
+  - a `User` with a `phone` set (phone numbers are encrypted at rest; `get_active_subscriptions()` skips
+    subscriptions without a decryptable phone)
+
+### Steps
+
+1. Copy or edit `backend/fixtures/injected_incidents.kml` — each `<Placemark>` is one incident. Adjust:
+   - the incident number in `iw-header-left` (its area-code letters drive area matching and must match a
+     subscription's `area`)
+   - `<coordinates>` (`lon,lat,altitude`) to fall within range of a subscribed route's polyline
+   - the `iw-title`/`iw-text` blocks for the incident type, timestamp, and location text
+2. Point the worker at the fixture instead of the live feed in `backend/.env`:
+   ```env
+   CALTRANS_FEED_URL="file:///absolute/path/to/backend/fixtures/injected_incidents.kml"
+   ```
+3. Run the worker:
+   ```bash
+   uv run python main.py
+   ```
+   It polls every 60s. On a match you should see `*** Match found for ...` in stdout, followed by a
+   summarized alert; without real Twilio credentials, dispatch falls back to console-logging the SMS instead
+   of sending one.
+4. To exercise the dedup/update/resolved paths, edit `backend/fixtures/injected_incidents.kml` between runs
+   and re-run the worker (or wait out its 60s loop):
+   - **Unchanged incident** → no re-alert. A fingerprint of the incident's `details` is stored in
+     `NotifiedIncident.state`; a re-run with identical content is a no-op.
+   - **Changed incident** (edit the `iw-title`/`iw-text`/timestamp text on an existing `<Placemark>`) → one
+     `UPDATE` alert, because the fingerprint no longer matches the stored `state`.
+   - **Resolved incident** (delete a `<Placemark>` that was previously alerted on, or rename its incident
+     number) → one `Incident Resolved` alert once the incident drops out of the feed for that subscription,
+     then silence — `check_and_notify()` flags it `state = "RESOLVED"` so it isn't re-sent on subsequent runs.
+   In all three cases, an incident is only ever re-alerted for a genuine content change or a resolution —
+   never for the same unchanged, still-open incident.
+5. Unset or remove `CALTRANS_FEED_URL` from `backend/.env` before running against the live feed again.
+
+For matching logic in isolation (no DB/Redis/frontend needed), see the `MockCaltransClient` pattern in
+`tests/test_caltrans_client.py`, which subclasses `CaltransAPIClient.fetch_raw_feed` directly with an in-memory
+KML payload.

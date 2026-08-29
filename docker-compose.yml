@@ -10,6 +10,11 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7-alpine
@@ -18,6 +23,71 @@ services:
       - "6380:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: incident-alerts-frontend-1
+    env_file:
+      - ./frontend/.env
+    environment:
+      # frontend/.env's DATABASE_URL points at 127.0.0.1:5433 for host-side
+      # `npx prisma db push` / local dev; inside the compose network it must
+      # resolve to the postgres service name instead.
+      DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/incidentsdb?schema=public"
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+    container_name: incident-alerts-worker-1
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/incidentsdb"
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Self-hosted OSRM routing engine — replaces the public OSRM demo server
+  # (router.project-osrm.org) that frontend/src/lib/routing.ts and
+  # backend/route_generator.py fall back to by default. Not enabled by
+  # default here because it needs a pre-processed OSM extract:
+  #
+  #   1. Download an extract, e.g.:
+  #        curl -L -o osrm-data/california.osm.pbf \
+  #          https://download.geofabrik.de/north-america/us/california-latest.osm.pbf
+  #   2. Pre-process it once (also via the osrm/osrm-backend image):
+  #        docker run -t -v "$(pwd)/osrm-data:/data" osrm/osrm-backend \
+  #          osrm-extract -p /opt/car.lua /data/california.osm.pbf
+  #        docker run -t -v "$(pwd)/osrm-data:/data" osrm/osrm-backend \
+  #          osrm-partition /data/california.osrm
+  #        docker run -t -v "$(pwd)/osrm-data:/data" osrm/osrm-backend \
+  #          osrm-customize /data/california.osrm
+  #   3. Uncomment this service and set OSRM_URL=http://osrm:5000 in
+  #      frontend/.env and backend/.env.
+  #
+  # osrm:
+  #   image: osrm/osrm-backend
+  #   container_name: incident-alerts-osrm-1
+  #   command: osrm-routed --algorithm mld /data/california.osrm
+  #   volumes:
+  #     - ./osrm-data:/data
+  #   ports:
+  #     - "5000:5000"
 
 volumes:
   postgres_data:

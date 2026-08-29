@@ -69,8 +69,9 @@ def check_and_notify():
         sub = sub_data["sub"]
         phone = sub_data["phone"]
         user = sub_data["user"]
-        
+
         incidents = incidents_by_area.get(sub.area, [])
+        matched_numbers = set()
         for inc in incidents:
             lat_lon_val = inc['details'].get('lat_lon')
             print(f"Checking incident {inc['number']} at {lat_lon_val} against route polyline for {sub.origin} -> {sub.destination}")
@@ -88,6 +89,7 @@ def check_and_notify():
                     is_match = True
 
             if is_match:
+                matched_numbers.add(inc["number"])
                 inc_id = f"{sub.id}_{inc['number']}"
                 # Create a fingerprint from the incident details to detect updates
                 current_state = str(inc.get('details', ''))
@@ -117,10 +119,46 @@ def check_and_notify():
                 finally:
                     db.close()
 
+        # Detect incidents previously alerted for this subscription that no longer
+        # match (dropped out of the feed or moved out of range) — i.e. resolved —
+        # and are not already flagged, so the "cleared" alert fires exactly once.
+        db = SessionLocal()
+        try:
+            id_prefix = f"{sub.id}_"
+            previously_notified = db.query(NotifiedIncident).filter(
+                NotifiedIncident.id.like(f"{id_prefix}%")
+            ).all()
+            for record in previously_notified:
+                if record.state == "RESOLVED":
+                    continue
+                inc_number = record.id[len(id_prefix):]
+                if inc_number in matched_numbers:
+                    continue
+                print(f"*** Incident resolved for {user} ({sub.origin}->{sub.destination}): {inc_number}")
+                message = f"Incident Resolved for {sub.origin}->{sub.destination}: Incident {inc_number} has cleared."
+                global_notification_queue.enqueue(to_phone=phone, message=message)
+                record.state = "RESOLVED"
+            db.commit()
+        except Exception as e:
+            print(f"DB Error while checking resolved incidents for subscription {sub.id}: {e}")
+            db.rollback()
+        finally:
+            db.close()
+
     # Process all queued notifications (with retries and DLQ dispatch)
     global_notification_queue.process_queue()
 
+def _validate_startup_env():
+    """Fails fast on missing required config instead of surfacing as a confusing
+    error deep in the polling loop (e.g. a decrypt failure on the first match)."""
+    required = ["DATABASE_URL", "PHONE_ENCRYPTION_KEY"]
+    missing = [key for key in required if not os.getenv(key)]
+    if missing:
+        raise SystemExit(f"Missing required environment variables: {', '.join(missing)}")
+
+
 if __name__ == "__main__":
+    _validate_startup_env()
     print("Starting Incident Notification Worker...")
     while True:
         try:
