@@ -76,8 +76,10 @@ if you want to avoid hitting live external services (Caltrans, Nominatim/OSRM, G
 
 ### Route polyline generation happens in two unrelated places
 - The frontend generates the polyline at subscription-creation time
-  (`frontend/src/app/api/subscriptions/route.ts`), using the Google Maps Directions API if
-  `GOOGLE_MAPS_API_KEY` is set, otherwise falling back to a single hardcoded mock LA-area polyline string.
+  (`frontend/src/app/api/subscriptions/route.ts`), calling the legacy Directions API
+  (`maps.googleapis.com/maps/api/directions/json`) with an API key (`GOOGLE_MAPS_API_KEY`, restricted to the
+  Directions API) if set, otherwise falling back to free Nominatim geocoding + OSRM routing
+  (`frontend/src/lib/routing.ts`) for the actual origin/destination.
 - `backend/route_generator.py` (Nominatim geocoding + OSRM routing) exists as a separate, self-contained
   utility but is **not called from `main.py`** — it's currently only exercised by tests. Don't assume it's part
   of the live request path.

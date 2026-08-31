@@ -12,7 +12,7 @@ A full-stack Next.js and Python web application that dynamically checks **Caltra
 * **Redis AI Summary Cache ([backend/cache_handler.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/cache_handler.py))**: Redis-backed summary caching with 24-hour TTL expiration (`EXPIRE`) and in-memory fallback to avoid duplicate Gemini AI API calls across distributed processes.
 * **Asynchronous Notification Queue with Retries & DLQ ([backend/notification_queue.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/notification_queue.py))**: Decoupled task queue supporting exponential backoff retries and Dead Letter Queue (DLQ) isolation for failed SMS dispatches.
 * **Real-Time Next.js Dashboard**: Modern web application to register routes, set active commute hours (e.g. `07:00` - `09:00`), and manage phone numbers.
-* **Database & Infrastructure (PostgreSQL + Redis)**: Docker containerized PostgreSQL on port `5433` and Redis on port `6379`.
+* **Database & Infrastructure (PostgreSQL + Redis)**: Docker containerized PostgreSQL on host port `5433` and Redis on host port `6380` (container port `6379` is unchanged; set `REDIS_PORT=6380` in `backend/.env` for local, non-Docker worker runs).
 * **Pytest Testing Suite**: Fully configured pytest suite (**26 passed in 8.5s**) covering Redis cache get/set/hashing, Caltrans API parsing, area filtering, notification queue retries, DLQ handling, bounding box rejection, and street address route matching.
 
 ---
@@ -52,27 +52,28 @@ Spin up PostgreSQL and Redis containers:
 docker compose up -d
 ```
 * PostgreSQL: `127.0.0.1:5433`
-* Redis: `127.0.0.1:6379`
+* Redis: `127.0.0.1:6380` (container port `6379` is unchanged — see `docker-compose.yml`)
 
 ---
 
 ### Step 2: Environment Configuration
 
-Create `backend/.env`:
-```env
-DATABASE_URL="postgresql://postgres:postgres@localhost:5433/incidentsdb"
-REDIS_HOST="localhost"
-REDIS_PORT=6379
-GEMINI_API_KEY="dummy_gemini"
-TWILIO_PHONE_NUMBER="+15550000000"
+Copy the example env files and fill in real values:
+```bash
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
 ```
 
-Create `frontend/.env`:
-```env
-DATABASE_URL="postgresql://postgres:postgres@localhost:5433/incidentsdb"
-NEXTAUTH_SECRET="super-secret-key"
-NEXTAUTH_URL="http://localhost:3000"
-```
+At minimum, for local dev:
+- `backend/.env`: set `REDIS_PORT=6380` (matches the Docker mapping above); `GEMINI_API_KEY` can be left
+  unset (falls back to a templated mock summary).
+- `frontend/.env`: set `NEXTAUTH_SECRET` (>=32 chars, e.g. `openssl rand -hex 32`) and
+  `PHONE_ENCRYPTION_KEY` (64-char hex, `openssl rand -hex 32`) — this key **must match** the same value in
+  `backend/.env` exactly, or phone numbers written by the frontend can't be decrypted by the worker.
+  `GOOGLE_CLIENT_ID`/`SECRET` and `GOOGLE_MAPS_API_KEY` are optional (Google OAuth login and Directions API
+  routing respectively both have working fallbacks — credentials login, and free Nominatim/OSRM routing).
+
+See `backend/.env.example` and `frontend/.env.example` for the full list of variables and what each does.
 
 ---
 

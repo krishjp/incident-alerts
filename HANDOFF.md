@@ -1,6 +1,6 @@
 # Project Handoff Document: Incident Alerts 🚗⚠️
 
-**Last Updated:** July 31, 2026
+**Last Updated:** August 31, 2026
 
 ## 🎯 Project Goals
 The goal of **Incident Alerts** is to provide real-time, automated traffic incident alerts to users based on their specific commute routes and active hours.
@@ -42,6 +42,12 @@ Key capabilities:
 - [x] **Testing & Verification Suite**:
   - Expanded Pytest suite across five test modules ([backend/tests/test_cache_handler.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_cache_handler.py), [backend/tests/test_routes.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_routes.py), [backend/tests/test_caltrans_client.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_caltrans_client.py), [backend/tests/test_notification_queue.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_notification_queue.py), [backend/tests/test_full_e2e.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/tests/test_full_e2e.py)).
   - Verified 26 automated tests covering Redis cache set/get/hashing, bounding box fast rejection, summary caching, geocoded route matching, live feed fetching, retry backoff, and DLQ handling (**26 passed in 8.5s**).
+- [x] **PII Encryption at Rest**:
+  - `User.phone` is encrypted with AES-256-GCM via a shared `PHONE_ENCRYPTION_KEY` (`frontend/src/lib/crypto.ts` for writes, `backend/models.py` for reads); the key must match exactly between `frontend/.env` and `backend/.env`.
+  - `frontend/src/lib/env.ts` fails fast on startup if required env vars are missing or `NEXTAUTH_SECRET`/`PHONE_ENCRYPTION_KEY` are weak/malformed.
+- [x] **Google Maps Directions API Integration**:
+  - `incident-alerts-routes` GCP project created, linked to billing account `019711-E766A9-AC72C0`, and moved under org `229395848094`.
+  - Directions API enabled; `GOOGLE_MAPS_API_KEY` (restricted to `directions-backend.googleapis.com`) generated and set in `frontend/.env` for `frontend/src/app/api/subscriptions/route.ts`. Falls back to free Nominatim/OSRM routing if unset.
 
 ---
 
@@ -60,14 +66,11 @@ Key capabilities:
 
 ### 2. Security & Data Protection
 - **Secrets Management & Environment Validation**:
-  - *Current Flaw*: Potential exposure of weak default keys (`super-secret-key`, default Postgres credentials).
-  - *Next Step*: Enforce strict environment variable validation on startup using `pydantic-settings` in Python and `zod` in Next.js; require strong entropy for production secrets.
+  - *Current State*: `frontend/src/lib/env.ts` validates required vars and rejects weak/placeholder `NEXTAUTH_SECRET` values on startup. Default Postgres credentials (`postgres`/`postgres`) and other example secrets in `.env.example` are still dev-only placeholders.
+  - *Next Step*: Add equivalent startup validation on the Python side (e.g. `pydantic-settings`) and require strong entropy for all production secrets, not just `NEXTAUTH_SECRET`.
 - **API Endpoint Rate Limiting**:
   - *Current Flaw*: Frontend route creation endpoints lack request rate limiting.
   - *Next Step*: Add middleware rate limiting (e.g. Upstash Redis / Next.js middleware) on route subscription endpoints to prevent Denial of Service (DoS).
-- **PII Encryption at Rest**:
-  - *Current Flaw*: Phone numbers stored in plain text in PostgreSQL.
-  - *Next Step*: Implement column-level encryption (e.g. `pgcrypto` or application-level AES encryption) for user phone numbers and contact details.
 
 ### 3. Frontend & Mock Integrations
 - **Local Twilio Mock Service**:

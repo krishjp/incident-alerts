@@ -9,7 +9,7 @@ A Python-based automation worker that ingests live incident data feeds from **Ca
 * **Caltrans API Client Handler ([caltrans_client.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/caltrans_client.py))**: Ingests live traffic incidents directly from Caltrans QuickMap XML/KML feeds (`https://quickmap.dot.ca.gov/data/chp-only.kml`) via HTTP (< 0.1s execution time), completely replacing legacy Selenium browser scraping.
 * **Asynchronous Notification Queue with DLQ ([notification_queue.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/notification_queue.py))**: Manages outbound Twilio SMS alert tasks asynchronously with exponential backoff retries and Dead Letter Queue (DLQ) isolation for failed dispatches.
 * **$O(1)$ Bounding Box Spatial Filtering**: Filters incidents using spatial bounding boxes before calculating exact geodesic distances along turn-by-turn polyline routes.
-* **AI Summary Caching**: Uses Gemini `gemini-2.5-flash` with an in-memory summary cache (`_SUMMARY_CACHE`) to format concise SMS notifications without duplicate LLM API calls.
+* **AI Summary Caching**: Uses Gemini `gemini-2.5-flash` to format concise SMS notifications, cached through `cache_handler.global_incident_cache` (Redis with 24h TTL, falling back to an in-memory dict if Redis is unreachable) to avoid duplicate LLM calls for the same incident content.
 * **Modern Package & Environment Management**: Fully configured via `pyproject.toml` and `uv` (`uv sync` / `uv.lock`).
 
 ---

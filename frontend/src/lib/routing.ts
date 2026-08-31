@@ -1,5 +1,5 @@
 // Free geocoding (Nominatim) + driving-route (OSRM) fallback used when no
-// GOOGLE_MAPS_API_KEY is configured. Requests geometries=polyline so OSRM
+// GOOGLE_CLOUD_PROJECT is configured for the Routes API. Requests geometries=polyline so OSRM
 // returns an already-encoded standard (precision-5) polyline string, matching
 // the format backend/route_utils.py's decode_polyline expects.
 //
