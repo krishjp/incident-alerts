@@ -53,12 +53,13 @@ if you want to avoid hitting live external services (Caltrans, Nominatim/OSRM, G
 ### Worker loop (`backend/main.py: check_and_notify`)
 1. `models.get_active_subscriptions()` — pulls `RouteSubscription` rows with `isActive=True` whose
    `startTime`/`endTime` window (PST) contains the current time (handles cross-midnight windows).
-2. Incidents are fetched once per distinct `area` value (`caltrans_client.fetch_caltrans_incidents`), not once
-   per subscription, to avoid redundant feed fetches.
+2. The full statewide Caltrans feed is fetched once per loop iteration (`caltrans_client.fetch_caltrans_incidents()`,
+   no area filter) — not per subscription or per `area` value. `RouteSubscription.area` is a user-facing label only;
+   it does not gate matching, since a route can cross CHP-area/county boundaries and dispatch station is unpredictable.
 3. Each incident is matched against a subscription's route via `route_utils.is_within_range_pure`: an O(1)
    bounding-box pre-filter over the decoded polyline, then exact Haversine distance to every route point
-   (default 5-mile buffer). If the incident has no lat/lon, falls back to a naive origin/destination substring
-   match against the incident location text.
+   (default 5-mile buffer) — this spatial check is the sole gate on relevance. If the incident has no lat/lon,
+   falls back to a naive origin/destination substring match against the incident location text.
 4. Matches are de-duplicated/updated via a fingerprint stored in `NotifiedIncident` (`id = "{subId}_{incidentNumber}"`,
    `state` = stringified incident details) — a changed `state` on an already-notified incident triggers an
    "UPDATE" alert instead of being skipped. After matching, each subscription's previously-notified incidents

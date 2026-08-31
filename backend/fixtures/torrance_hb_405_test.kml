@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Live-test fixture for the Torrance -> Huntington Beach (I-405 S) subscription. Coordinates fall on the real OSRM-routed polyline: one near the I-405/I-91 interchange in Carson (LA), one near Seal Beach Blvd (Orange County). -->
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+<name>Torrance -> Huntington Beach 405 Test Incident</name>
+<Placemark>
+  <name> </name>
+  <description><![CDATA[
+<div class="infowindow-content">
+    <div class="iw-header">
+        <div class="iw-header-left">CHP Incident 260831LA9001</div>
+    </div>
+    <div class="iw-body">
+        <h2 class="iw-title">1183-Trfc Collision-Unkn Inj</h2>
+        <p class="iw-text">Aug 31 2026 09:00AM <br> I-405 S / I-91 (Carson)</p>
+        <p class="iw-text">Aug 31 2026 09:01AM [2] VEHICLE BLOCKING #2 LANE<br />Aug 31 2026 09:00AM [1] 2 VEH TC</p>
+    </div>
+</div>
+  ]]></description>
+  <Point><coordinates>-118.28098,33.84619,0</coordinates></Point>
+</Placemark>
+<Placemark>
+  <name> </name>
+  <description><![CDATA[
+<div class="infowindow-content">
+    <div class="iw-header">
+        <div class="iw-header-left">CHP Incident 260831OR9002</div>
+    </div>
+    <div class="iw-body">
+        <h2 class="iw-title">1183-Trfc Collision-Unkn Inj</h2>
+        <p class="iw-text">Aug 31 2026 09:10AM <br> I-405 S near Seal Beach Blvd</p>
+        <p class="iw-text">Aug 31 2026 09:10AM [1] 2 VEH TC ON SHOULDER</p>
+    </div>
+</div>
+  ]]></description>
+  <Point><coordinates>-118.00380,33.67929,0</coordinates></Point>
+</Placemark>
+</Document>
+</kml>

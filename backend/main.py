@@ -55,24 +55,21 @@ def check_and_notify():
         global_notification_queue.process_queue()
         return
 
-    # Group by area to avoid fetching same area multiple times
-    areas_to_fetch = set(sub["sub"].area for sub in active_subs)
-    
-    incidents_by_area = {}
-    for area in areas_to_fetch:
-        print(f"Fetching Caltrans API feed for area: {area}...")
-        incidents = fetch_caltrans_incidents(area)
-        incidents_by_area[area] = incidents
-        print(f"Found {len(incidents)} incidents in {area}.")
+    # The Caltrans feed is one statewide snapshot per HTTP call; fetch_caltrans_incidents(area)
+    # only filters it client-side afterward. Routes can cross county/CHP-area boundaries, and
+    # the dispatching station for a given incident is unpredictable, so match every subscription
+    # against the unfiltered statewide feed using spatial distance alone.
+    print("Fetching statewide Caltrans API feed...")
+    all_incidents = fetch_caltrans_incidents()
+    print(f"Found {len(all_incidents)} incidents statewide.")
 
     for sub_data in active_subs:
         sub = sub_data["sub"]
         phone = sub_data["phone"]
         user = sub_data["user"]
 
-        incidents = incidents_by_area.get(sub.area, [])
         matched_numbers = set()
-        for inc in incidents:
+        for inc in all_incidents:
             lat_lon_val = inc['details'].get('lat_lon')
             print(f"Checking incident {inc['number']} at {lat_lon_val} against route polyline for {sub.origin} -> {sub.destination}")
             
