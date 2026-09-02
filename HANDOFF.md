@@ -1,6 +1,6 @@
 # Project Handoff Document: Incident Alerts 🚗⚠️
 
-**Last Updated:** August 31, 2026
+**Last Updated:** September 2, 2026
 
 ## 🎯 Project Goals
 The goal of **Incident Alerts** is to provide real-time, automated traffic incident alerts to users based on their specific commute routes and active hours.
@@ -48,32 +48,62 @@ Key capabilities:
 - [x] **Google Maps Directions API Integration**:
   - `incident-alerts-routes` GCP project created, linked to billing account `019711-E766A9-AC72C0`, and moved under org `229395848094`.
   - Directions API enabled; `GOOGLE_MAPS_API_KEY` (restricted to `directions-backend.googleapis.com`) generated and set in `frontend/.env` for `frontend/src/app/api/subscriptions/route.ts`. Falls back to free Nominatim/OSRM routing if unset.
+- [x] **Typed, Fail-Fast Backend Configuration ([backend/config.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/config.py))**:
+  - `pydantic-settings` `Settings` model validates every worker env var at process start — mirroring `frontend/src/lib/env.ts` — and converts pydantic's traceback into a single readable `SystemExit`.
+  - Rejects a malformed `PHONE_ENCRYPTION_KEY` (must be 64 hex chars), an unsupported `DATABASE_URL` scheme, and a sub-1s poll interval.
+  - When `ENVIRONMENT` is anything but development/test, additionally rejects default `postgres/postgres` credentials, a `localhost` database URL, and half-configured Twilio credentials (a placeholder SID silently downgrades every alert to a console print).
+  - `settings.describe()` logs a credential-redacted config summary at boot.
+- [x] **Database Connection Pooling ([backend/models.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/models.py))**:
+  - Explicit `pool_size` / `max_overflow` / `pool_timeout` / `pool_recycle` (env-tunable), plus `pool_pre_ping` so a connection dropped by a managed proxy while the worker slept isn't handed out dead.
+  - Added a `session_scope()` context manager and reworked `check_and_notify` to take **one session per subscription** instead of one per matched incident.
+  - Replaced the N+1 per-subscription `User` lookup in `get_active_subscriptions()` with a single join; extracted the cross-midnight window logic into a testable `is_in_time_window()`.
+- [x] **Durable Notification Queue ([backend/notification_queue.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/notification_queue.py))**:
+  - Pending and dead-lettered tasks are mirrored into Redis hashes (`TaskStore`) and restored at startup, so an alert enqueued just before a redeploy, scale-to-zero, or instance replacement is still delivered afterwards.
+  - Persistence is opt-in per instance (`persist=True` on the deployed singleton) so tests never inherit a developer's local Redis state; every Redis failure degrades to in-process-only behaviour.
+  - Connection details centralized in [backend/redis_client.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/redis_client.py), which also adds `REDIS_URL` support (`rediss://`) for managed providers.
+- [x] **Worker Liveness Endpoint ([backend/health.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/health.py))**:
+  - `/healthz` on `$PORT`, served from a daemon thread — satisfies Cloud Run's "must listen on PORT" contract for a process that has no HTTP API.
+  - Reports **stalled** (503) once the loop misses three poll intervals, so a wedged-but-alive worker is taken out of service rather than silently failing to alert.
+  - Added `RUN_ONCE=true` for a single-pass invocation (Cloud Run Job / cron shape).
+- [x] **Route Polyline Caching & External Rate-Limit Protection**:
+  - New `RouteCache` Prisma model: origin+destination+provider → polyline, keyed by a normalized-address hash, so a repeated commute never re-hits the routing provider ([frontend/src/lib/route-cache.ts](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/frontend/src/lib/route-cache.ts)).
+  - Nominatim calls are serialized through a 1 req/s gate (its published policy — exceeding it gets the egress IP blocked, and on Vercel that IP is shared) with exponential-backoff retry on 429/5xx.
+  - Cache read/write failures never block subscription creation.
+- [x] **API Rate Limiting ([frontend/src/lib/rate-limit.ts](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/frontend/src/lib/rate-limit.ts))**:
+  - Upstash Redis (REST) backend when configured, per-instance in-memory fixed window otherwise; fails **open** so a limiter outage can't take down signups.
+  - Applied to subscription creation (10/min, keyed by user id), registration (5/5min, keyed by IP), and credentials login (10/5min, keyed by email).
+- [x] **Subscription API Hardening & Dashboard Completion**:
+  - **Fixed an IDOR**: `DELETE /api/subscriptions` deleted by `id` with no ownership check, so any signed-in user could delete another account's route. Delete and the new `PATCH` are both scoped by `userId`.
+  - Added input validation (HH:MM times, address length, per-user subscription cap), a `PATCH` endpoint for pause/resume, `NotifiedIncident` cleanup on delete, and generic error messages on the unauthenticated register route.
+  - Dashboard gained pause/resume controls, paused-state styling, inline error/success banners (replacing `alert()`), and optimistic updates with rollback.
+- [x] **Deployment Path ([DEPLOYMENT.md](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/DEPLOYMENT.md))**:
+  - Prisma **migration history** (`frontend/prisma/migrations/`) replacing `db push`, with `directUrl` for pooler-incompatible DDL.
+  - Vercel config for the frontend (`frontend/vercel.json`, `vercel-build` script running `migrate deploy`); build-time env validation skipped via `NEXT_PHASE` so builds don't require runtime secrets.
+  - Cloud Run deployment for the worker with the flags this workload actually needs (`--min-instances=1 --no-cpu-throttling --max-instances=1`) and Secret Manager wiring; non-root, healthchecked Docker image.
+  - CI (`.github/workflows/ci.yml`): pytest, lint, typecheck, build, plus a job that applies migrations to a fresh Postgres and **fails on schema drift**. Deploy workflow uses Workload Identity Federation — no GCP key in the repo.
+- [x] **Test Suite Expansion**: 23 → 68 offline tests, covering config validation and redaction, queue persistence/restart-replay behaviour, health stall detection, and cross-midnight time windows.
 
 ---
 
-## 🚧 Pending & Next Steps (Addressing Architecture & Security Flaws)
+## 🚧 Pending & Next Steps
 
-### 1. Scaling & Infrastructure Remediation
-- **Distributed Worker Queue Architecture**:
-  - *Current State*: In-memory task queue in `notification_queue.py` and sequential evaluation in `main.py`.
-  - *Next Step*: Scale out to distributed task queues (e.g., Celery + Redis Streams) to evaluate spatial subscriptions concurrently across worker nodes.
-- **External API Rate Limiting & Polyline Caching**:
-  - *Current Flaw*: Direct calls to public Nominatim and OSRM routing servers can trigger 429 Rate Limit errors under concurrent route creation.
-  - *Next Step*: Cache route polylines permanently in PostgreSQL upon subscription creation and introduce a self-hosted OSRM Docker container or fallback router.
-- **Database Connection Pooling**:
-  - *Current Flaw*: Unmanaged database connections between Next.js Prisma client API calls and SQLAlchemy worker loops.
-  - *Next Step*: Configure explicit connection pooling thresholds (e.g. PgBouncer or SQLAlchemy pool sizes) to prevent database connection exhaustion under load.
+### 1. Distributed Worker Queue Architecture
+- *Current State*: The notification queue is now Redis-durable, but subscription evaluation in `main.py` is still sequential and single-process. The Cloud Run service is pinned to `--max-instances=1`.
+- *Why it's still pinned*: Two instances wouldn't send duplicate SMS (the `NotifiedIncident` fingerprint row de-dupes), but they would race on that row and duplicate Gemini calls.
+- *Next Step*: Move subscription evaluation onto a distributed task queue (Celery + Redis Streams) so instances can be added, then raise `--max-instances`.
 
-### 2. Security & Data Protection
-- **Secrets Management & Environment Validation**:
-  - *Current State*: `frontend/src/lib/env.ts` validates required vars and rejects weak/placeholder `NEXTAUTH_SECRET` values on startup. Default Postgres credentials (`postgres`/`postgres`) and other example secrets in `.env.example` are still dev-only placeholders.
-  - *Next Step*: Add equivalent startup validation on the Python side (e.g. `pydantic-settings`) and require strong entropy for all production secrets, not just `NEXTAUTH_SECRET`.
-- **API Endpoint Rate Limiting**:
-  - *Current Flaw*: Frontend route creation endpoints lack request rate limiting.
-  - *Next Step*: Add middleware rate limiting (e.g. Upstash Redis / Next.js middleware) on route subscription endpoints to prevent Denial of Service (DoS).
+### 2. Self-Hosted Routing
+- *Current State*: `RouteCache` plus the 1 req/s throttle keeps normal usage well inside Nominatim/OSRM limits.
+- *Next Step*: The public demo servers still have no SLA. Stand up the `osrm` service already scaffolded in `docker-compose.yml` (needs a pre-processed California OSM extract), or rely on the Google Directions key.
 
-### 3. Frontend & Mock Integrations
-- **Local Twilio Mock Service**:
-  - Build a lightweight local Express/Flask mock service to capture and display outbound Twilio webhooks locally.
-- **Frontend UI Dashboard**:
-  - Run Prisma database push (`npx prisma db push`) and finish route subscription management forms in Next.js.
+### 3. Observability
+- *Current State*: `/healthz` reports a stalled loop; logs are plain `print()` to stdout.
+- *Next Step*: Add a Cloud Monitoring uptime check against `/healthz` with an alerting policy, and move the worker to structured (JSON) logging so Cloud Logging can index fields like subscription id and incident number.
+
+### 4. Twilio Go-Live
+- *Current State*: Dispatch is implemented and inert — unset/placeholder credentials console-log instead of sending. Deliberately deferred until the deployment is settled.
+- *Next Step*: Add real credentials to Secret Manager and redeploy (no code change). Note that pay-as-you-go accounts can only text **verified** numbers until upgraded, and US A2P 10DLC registration is required for application-initiated SMS — until both are done, failures accumulate in the DLQ.
+
+### 5. Nice-to-Haves
+- **Local Twilio mock service**: a small Express/Flask receiver to display outbound messages locally. The console-log fallback covers most of this need today.
+- **DLQ visibility**: `retry_dlq_task()` exists but there is no operator interface for it — dead-lettered alerts are currently only visible in logs.

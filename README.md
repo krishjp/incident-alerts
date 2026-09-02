@@ -77,12 +77,20 @@ See `backend/.env.example` and `frontend/.env.example` for the full list of vari
 
 ---
 
-### Step 3: Frontend Setup & Database Push
+### Step 3: Frontend Setup & Database Migration
 ```bash
 cd frontend
 npm install
-npx prisma@5 db push
+npx prisma migrate deploy   # applies prisma/migrations to the database
 ```
+
+The schema is now managed by a checked-in migration history rather than
+`prisma db push`. After editing `prisma/schema.prisma`, run
+`npx prisma migrate dev --name <what-changed>` to generate the migration — and
+update `backend/models.py` by hand to match.
+
+> **Already have a database created with `db push`?** Baseline it once:
+> `npx prisma migrate resolve --applied 00000000000000_init`.
 
 Start the Next.js development server:
 ```bash
@@ -97,8 +105,20 @@ Access the dashboard at [http://localhost:3000](http://localhost:3000).
 cd backend
 uv venv
 uv sync
-uv run python main.py
+uv run python main.py          # long-lived polling loop
+RUN_ONCE=true uv run python main.py   # single pass, then exit (useful for debugging)
 ```
+
+The worker prints a redacted configuration summary at startup and refuses to
+start on invalid config (see `backend/config.py`). It also serves a liveness
+endpoint on `PORT` (default 8080):
+
+```bash
+curl http://localhost:8080/healthz
+```
+
+which returns 503 — not just "process is up" — once the poll loop stops
+completing cycles.
 
 ---
 
@@ -128,9 +148,37 @@ for full requirements and steps.
 
 ---
 
+## 🚢 Deploying
+
+See **[DEPLOYMENT.md](DEPLOYMENT.md)** for the full runbook: Next.js on Vercel,
+the Python worker on Cloud Run, managed Postgres and Redis, secrets, CI/CD, and
+rollback.
+
+---
+
 ## 🏗️ Architecture & Security Considerations (Roadmap)
 
-1. **Distributed Queue Architecture**: Scale the task queue in `notification_queue.py` into distributed worker pools (Celery / Redis Streams) to handle subscription scaling.
-2. **Routing Rate Limits & Caching**: Cache turn-by-turn polylines permanently in PostgreSQL; fallback to self-hosted OSRM to protect against external rate limits.
-3. **Connection Pooling**: Enforce PgBouncer / SQLAlchemy pool sizes to avoid database connection exhaustion.
-4. **Security & PII Encryption**: Enforce environment variable validation and encrypt sensitive user phone numbers at rest in PostgreSQL.
+Done:
+
+- ✅ **Routing rate limits & caching** — polylines are cached permanently in the
+  `RouteCache` table, and Nominatim calls are throttled to its 1 req/s policy
+  with retry/backoff (`frontend/src/lib/route-cache.ts`, `src/lib/routing.ts`).
+- ✅ **Connection pooling** — explicit SQLAlchemy pool sizing with pre-ping and
+  recycle (`backend/models.py`); `connection_limit` guidance for Prisma in
+  DEPLOYMENT.md.
+- ✅ **Environment validation** — fail-fast, typed config on both sides
+  (`backend/config.py`, `frontend/src/lib/env.ts`), with extra production checks.
+- ✅ **API rate limiting** — Upstash-backed (in-memory fallback) limits on
+  subscription creation, registration, and login (`frontend/src/lib/rate-limit.ts`).
+- ✅ **Durable notifications** — pending and dead-lettered SMS survive a worker
+  restart via Redis (`backend/notification_queue.py`).
+
+Remaining:
+
+1. **Distributed queue architecture** — scale the task queue into distributed
+   worker pools (Celery / Redis Streams) so more than one worker instance can
+   run. Until then the worker is pinned to `--max-instances=1`.
+2. **Self-hosted routing** — the public Nominatim/OSRM endpoints have no SLA;
+   run the `osrm` service in `docker-compose.yml` for real traffic.
+3. **Worker alerting** — `/healthz` reports a stalled loop, but nothing pages
+   anyone on it yet.

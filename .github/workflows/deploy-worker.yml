@@ -1,0 +1,95 @@
+name: Deploy worker
+
+# Deploys the Python polling worker to Cloud Run. The Next.js frontend is NOT
+# deployed here — Vercel builds it from its own Git integration.
+#
+# Requires these repository settings (see DEPLOYMENT.md for how to create them):
+#   vars.GCP_PROJECT_ID          e.g. incident-alerts-routes
+#   vars.GCP_REGION              e.g. us-west2
+#   vars.GCP_SERVICE_ACCOUNT     deployer service account email
+#   vars.GCP_WORKLOAD_IDENTITY_PROVIDER
+#                                projects/<n>/locations/global/workloadIdentityPools/<pool>/providers/<provider>
+#   vars.CLOUD_SQL_INSTANCE      project:region:instance (omit if not using Cloud SQL)
+#
+# Runtime secrets are NOT passed from GitHub: they are read from Secret Manager
+# by the Cloud Run service itself, so this workflow never handles them.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy-worker.yml"
+  workflow_dispatch:
+
+env:
+  SERVICE: incident-alerts-worker
+
+# Workload Identity Federation instead of a long-lived JSON key: no GCP
+# credential is ever stored in this repository.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Build and deploy to Cloud Run
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Artifact Registry auth
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        env:
+          IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/incident-alerts/worker
+        run: |
+          # Tag with the commit SHA so a bad deploy can be rolled back to an
+          # exact revision rather than a moving "latest".
+          docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" ./backend
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+
+      - name: Deploy to Cloud Run
+        env:
+          IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/incident-alerts/worker
+        run: |
+          # --min-instances=1 with --no-cpu-throttling: this is a polling loop,
+          # not a request handler. Without both flags Cloud Run scales it to zero
+          # and freezes its CPU between requests, and no alerts are ever sent.
+          gcloud run deploy "$SERVICE" \
+            --image "$IMAGE:${{ github.sha }}" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --platform managed \
+            --no-allow-unauthenticated \
+            --min-instances=1 \
+            --max-instances=1 \
+            --no-cpu-throttling \
+            --memory=512Mi \
+            --port=8080 \
+            --set-env-vars="ENVIRONMENT=production,POLL_INTERVAL_SECONDS=60" \
+            --set-secrets="DATABASE_URL=incident-alerts-database-url:latest,PHONE_ENCRYPTION_KEY=incident-alerts-phone-key:latest,REDIS_URL=incident-alerts-redis-url:latest,GEMINI_API_KEY=incident-alerts-gemini-key:latest,TWILIO_ACCOUNT_SID=incident-alerts-twilio-sid:latest,TWILIO_AUTH_TOKEN=incident-alerts-twilio-token:latest,TWILIO_PHONE_NUMBER=incident-alerts-twilio-number:latest" \
+            ${{ vars.CLOUD_SQL_INSTANCE && format('--add-cloudsql-instances={0}', vars.CLOUD_SQL_INSTANCE) || '' }}
+
+      - name: Verify the new revision is serving
+        run: |
+          # max-instances=1 means the old revision is torn down before the new
+          # one is ready; a failed rollout must fail the workflow loudly.
+          gcloud run services describe "$SERVICE" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --format="value(status.conditions[0].type,status.conditions[0].status)" \
+            | tee /tmp/status
+          grep -q "Ready	True" /tmp/status

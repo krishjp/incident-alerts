@@ -19,10 +19,11 @@ docker compose up -d        # Postgres on host port 5433, Redis on host port 638
 ### Frontend (`frontend/`)
 ```bash
 npm install
-npx prisma db push          # sync Postgres schema from prisma/schema.prisma
+npx prisma migrate deploy   # apply prisma/migrations (NOT `db push` — see below)
 npm run dev                 # Next.js dev server, http://localhost:3000
 npm run build
 npm run lint
+npm run typecheck
 ```
 
 ### Backend (`backend/`, managed with `uv`)
@@ -30,6 +31,7 @@ npm run lint
 uv venv
 uv sync
 uv run python main.py       # long-lived polling worker (60s loop) — run as a separate process from the frontend
+RUN_ONCE=true uv run python main.py   # single poll pass, then exit
 
 uv run pytest                                        # full suite
 uv run pytest tests/test_caltrans_client.py           # one file
@@ -44,11 +46,26 @@ if you want to avoid hitting live external services (Caltrans, Nominatim/OSRM, G
 ### Two independent runtimes, one database
 - `frontend/` (Next.js App Router) owns user auth, route subscription CRUD, and writes to Postgres via Prisma
   (`frontend/prisma/schema.prisma`).
-- `backend/` (`main.py`) is a plain `while True: ... sleep(60)` loop with **no HTTP server** — it reads the same
-  Postgres tables directly via SQLAlchemy (`backend/models.py`).
+- `backend/` (`main.py`) is a plain `while True: ... sleep(POLL_INTERVAL_SECONDS)` loop with **no HTTP API** —
+  it reads the same Postgres tables directly via SQLAlchemy (`backend/models.py`). It does serve one endpoint,
+  `/healthz` on `$PORT` (`backend/health.py`), purely to satisfy container-platform liveness probes; that
+  endpoint reports 503 when the loop stalls, not merely when the process dies.
 - **The SQLAlchemy models in `backend/models.py` are hand-maintained to mirror `frontend/prisma/schema.prisma`**
   (table names use Prisma's PascalCase, e.g. `"RouteSubscription"`). There is no codegen link between them —
   when you change one schema, update the other by hand.
+- The database schema is managed by a **Prisma migration history** (`frontend/prisma/migrations/`), not
+  `db push`. After editing `schema.prisma`, run `npx prisma migrate dev --name <what-changed>`; CI fails on
+  a schema edit with no corresponding migration. `directUrl`/`DIRECT_URL` must be set (it's what migrations
+  connect through) — locally it's just a copy of `DATABASE_URL`.
+
+### Configuration
+- Both halves validate their environment at startup and refuse to run on bad config:
+  `backend/config.py` (pydantic-settings; import `settings` rather than reading `os.getenv` in new code) and
+  `frontend/src/lib/env.ts`. Setting `ENVIRONMENT` to anything but development/test turns on extra backend
+  checks (no default `postgres/postgres` credentials, no `localhost` database, no half-configured Twilio).
+- `frontend/src/lib/env.ts` deliberately **skips validation during `next build`** (`NEXT_PHASE`): Next.js
+  imports every route module to collect page data, so validating there would make builds require production
+  runtime secrets.
 
 ### Worker loop (`backend/main.py: check_and_notify`)
 1. `models.get_active_subscriptions()` — pulls `RouteSubscription` rows with `isActive=True` whose
@@ -73,13 +90,19 @@ if you want to avoid hitting live external services (Caltrans, Nominatim/OSRM, G
    and only actually dispatched when `process_queue()` runs at the end of the loop iteration. The queue does
    exponential backoff retries (`backoff_factor * 2^(attempts-1)`) and moves tasks to a Dead Letter Queue after
    `max_retries`; DLQ tasks need explicit `retry_dlq_task()` to re-enter the pending queue.
+   Pending and DLQ tasks are mirrored into Redis (`TaskStore`) and restored on startup, so undelivered alerts
+   survive a restart. Persistence is **opt-in per instance** (`NotificationQueue(persist=True)`, set only on the
+   global singleton) so tests and ad-hoc instances never inherit a developer's local Redis state.
 
 ### Route polyline generation happens in two unrelated places
 - The frontend generates the polyline at subscription-creation time
-  (`frontend/src/app/api/subscriptions/route.ts`), calling the legacy Directions API
+  (`frontend/src/app/api/subscriptions/route.ts` → `src/lib/route-cache.ts`), calling the legacy Directions API
   (`maps.googleapis.com/maps/api/directions/json`) with an API key (`GOOGLE_MAPS_API_KEY`, restricted to the
   Directions API) if set, otherwise falling back to free Nominatim geocoding + OSRM routing
   (`frontend/src/lib/routing.ts`) for the actual origin/destination.
+  Both paths go through the `RouteCache` table first (keyed by a normalized origin/destination/provider hash),
+  and Nominatim calls are serialized through a 1 req/s gate with retry/backoff — its usage policy is a hard
+  limit, and exceeding it blocks the egress IP rather than just throttling.
 - `backend/route_generator.py` (Nominatim geocoding + OSRM routing) exists as a separate, self-contained
   utility but is **not called from `main.py`** — it's currently only exercised by tests. Don't assume it's part
   of the live request path.
@@ -89,8 +112,27 @@ if you want to avoid hitting live external services (Caltrans, Nominatim/OSRM, G
 ### Auth
 NextAuth (`frontend/src/lib/auth.ts`) with JWT sessions, supporting both Google OAuth and credentials
 (bcrypt-hashed password) login, backed by the Prisma adapter against the same `User`/`Account`/`Session` tables.
+`src/types/next-auth.d.ts` must keep its `import "next-auth"` line: without an import, its `declare module`
+block *replaces* next-auth's types instead of augmenting them, and every `getServerSession` call stops typechecking.
+
+### API authorization
+Subscription routes scope every mutation by `userId` (`deleteMany`/`updateMany` with `{ id, userId }`, not
+`delete({ where: { id } })`). Keep new endpoints to that pattern — the unscoped form previously let any signed-in
+user delete another account's route by id.
+
+### Rate limiting
+`frontend/src/lib/rate-limit.ts` fronts subscription creation, registration, and credentials login. It uses
+Upstash Redis over REST when `UPSTASH_REDIS_REST_URL`/`_TOKEN` are set and per-instance in-memory counters
+otherwise, and **fails open** on limiter errors. The in-memory fallback is per serverless instance, so
+production deploys should configure Upstash.
 
 ### Ports/env gotcha
-`docker-compose.yml` publishes Redis on host port **6380** (container port 6379 is untouched), which differs
-from the port both READMEs describe (`6379`) — check `REDIS_PORT` in `backend/.env` against the actual
-docker-compose mapping if cache connections are silently falling back to in-memory mode.
+`docker-compose.yml` publishes Redis on host port **6380** (container port 6379 is untouched). Set
+`REDIS_PORT=6380` in `backend/.env` for a host-side worker run; inside the compose network the worker uses
+6379. If cache connections silently fall back to in-memory mode, check this first. In deployed environments,
+prefer `REDIS_URL` (a single `rediss://` string), which takes precedence over host/port.
+
+### Deployment
+See `DEPLOYMENT.md`. Frontend → Vercel; worker → Cloud Run, which needs `--min-instances=1`,
+`--no-cpu-throttling` (a polling loop receives no requests, so throttled CPU stops it making progress) and
+`--max-instances=1` (multiple instances would race on the `NotifiedIncident` fingerprint row).

@@ -40,6 +40,9 @@ services:
       # `npx prisma db push` / local dev; inside the compose network it must
       # resolve to the postgres service name instead.
       DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/incidentsdb?schema=public"
+      # Prisma requires directUrl to resolve; local Postgres is direct-connect,
+      # so it's the same string.
+      DIRECT_URL: "postgresql://postgres:postgres@postgres:5432/incidentsdb?schema=public"
     ports:
       - "3000:3000"
     depends_on:
@@ -54,8 +57,14 @@ services:
       - ./backend/.env
     environment:
       DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/incidentsdb"
+      # Inside the compose network Redis is reached on its container port, not
+      # the 6380 the host sees.
       REDIS_HOST: "redis"
       REDIS_PORT: "6379"
+      PORT: "8080"
+    ports:
+      # Liveness endpoint only (backend/health.py) — the worker has no HTTP API.
+      - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
