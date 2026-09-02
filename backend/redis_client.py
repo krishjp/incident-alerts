@@ -11,6 +11,8 @@ the cache falls back to an in-memory dict and the notification queue falls back
 to in-process-only durability.
 """
 
+import uuid
+from contextlib import contextmanager
 from typing import Optional
 
 from config import settings
@@ -43,7 +45,7 @@ def get_redis_client(force_reconnect: bool = False):
     _connect_attempted = True
 
     if redis is None:
-        print("[Redis] python 'redis' package not installed — using in-memory fallbacks.")
+        print("[Redis] python 'redis' package not installed - using in-memory fallbacks.")
         return None
 
     try:
@@ -72,10 +74,70 @@ def get_redis_client(force_reconnect: bool = False):
             print(f"[Redis] Connected ({target}).")
             _client = client
     except Exception as exc:
-        print(f"[Redis] Unavailable ({type(exc).__name__}: {exc}) — using in-memory fallbacks.")
+        print(f"[Redis] Unavailable ({type(exc).__name__}: {exc}) - using in-memory fallbacks.")
         _client = None
 
     return _client
+
+
+# Distinguishes "caller didn't specify a client" (look one up) from an explicit
+# client=None meaning "there is no Redis" — which tests need to exercise.
+_UNSET = object()
+
+
+@contextmanager
+def single_run_lock(name: str, ttl_seconds: int, client=_UNSET):
+    """
+    Best-effort mutual exclusion across processes, yielding True when acquired.
+
+    Needed because Cloud Scheduler fires the worker Job on a fixed interval and
+    does not wait for the previous execution to finish. Two concurrent runs
+    would both match every subscription and race on the `NotifiedIncident`
+    fingerprint row — the same reason a long-lived deployment is pinned to one
+    instance. A slow run (a stalled Caltrans fetch, a slow Gemini call) is
+    exactly when overlap happens, so this is not a theoretical case.
+
+    SET NX EX gives atomic acquire-with-expiry, so a run that dies without
+    releasing the lock cannot wedge every future run — the key expires on its
+    own after ttl_seconds. Set the TTL above the worst-case run time and below
+    the point where skipping cycles matters.
+
+    Degrades to "always acquired" when Redis is unavailable, consistent with
+    Redis being an optimization rather than a dependency everywhere else. Say so
+    in the log, because the overlap guarantee is genuinely gone in that case.
+    """
+    redis = get_redis_client() if client is _UNSET else client
+
+    if redis is None:
+        print("[Lock] Redis unavailable - proceeding without overlap protection.")
+        yield True
+        return
+
+    key = f"lock:{name}"
+    token = str(uuid.uuid4())
+    acquired = False
+
+    try:
+        acquired = bool(redis.set(key, token, nx=True, ex=ttl_seconds))
+    except Exception as exc:
+        print(f"[Lock] Could not acquire ({type(exc).__name__}: {exc}) - proceeding anyway.")
+        yield True
+        return
+
+    if not acquired:
+        yield False
+        return
+
+    try:
+        yield True
+    finally:
+        try:
+            # Only delete the lock if it is still ours: a run that overran its
+            # TTL must not delete the lock a later run legitimately holds.
+            if redis.get(key) == token:
+                redis.delete(key)
+        except Exception as exc:
+            print(f"[Lock] Could not release ({type(exc).__name__}: {exc}); it expires in {ttl_seconds}s.")
 
 
 def reset_for_tests() -> None:

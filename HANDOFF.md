@@ -79,7 +79,8 @@ Key capabilities:
 - [x] **Deployment Path ([DEPLOYMENT.md](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/DEPLOYMENT.md))**:
   - Prisma **migration history** (`frontend/prisma/migrations/`) replacing `db push`, with `directUrl` for pooler-incompatible DDL.
   - Vercel config for the frontend (`frontend/vercel.json`, `vercel-build` script running `migrate deploy`); build-time env validation skipped via `NEXT_PHASE` so builds don't require runtime secrets.
-  - Cloud Run deployment for the worker with the flags this workload actually needs (`--min-instances=1 --no-cpu-throttling --max-instances=1`) and Secret Manager wiring; non-root, healthchecked Docker image.
+  - Worker deployed as a **Cloud Run Job** driven by Cloud Scheduler (`RUN_ONCE=true`) rather than an always-on service — the loop sleeps through most of each interval, and a service bills an always-allocated vCPU for that idle time. Secret Manager wiring; non-root, healthchecked Docker image.
+  - `single_run_lock()` (Redis `SET NX EX`) stops two scheduled executions overlapping, since Cloud Scheduler does not wait for the previous run and two concurrent runs would race on the `NotifiedIncident` fingerprint row.
   - CI (`.github/workflows/ci.yml`): pytest, lint, typecheck, build, plus a job that applies migrations to a fresh Postgres and **fails on schema drift**. Deploy workflow uses Workload Identity Federation — no GCP key in the repo.
 - [x] **Test Suite Expansion**: 23 → 68 offline tests, covering config validation and redaction, queue persistence/restart-replay behaviour, health stall detection, and cross-midnight time windows.
 
@@ -88,9 +89,9 @@ Key capabilities:
 ## 🚧 Pending & Next Steps
 
 ### 1. Distributed Worker Queue Architecture
-- *Current State*: The notification queue is now Redis-durable, but subscription evaluation in `main.py` is still sequential and single-process. The Cloud Run service is pinned to `--max-instances=1`.
+- *Current State*: The notification queue is now Redis-durable, but subscription evaluation in `main.py` is still sequential and single-process. Exactly one worker runs at a time, enforced by the Redis run lock.
 - *Why it's still pinned*: Two instances wouldn't send duplicate SMS (the `NotifiedIncident` fingerprint row de-dupes), but they would race on that row and duplicate Gemini calls.
-- *Next Step*: Move subscription evaluation onto a distributed task queue (Celery + Redis Streams) so instances can be added, then raise `--max-instances`.
+- *Next Step*: Move subscription evaluation onto a distributed task queue (Celery + Redis Streams) so executions can safely run concurrently, then relax the run lock.
 
 ### 2. Self-Hosted Routing
 - *Current State*: `RouteCache` plus the 1 req/s throttle keeps normal usage well inside Nominatim/OSRM limits.

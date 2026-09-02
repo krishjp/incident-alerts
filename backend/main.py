@@ -2,6 +2,7 @@ import time
 from google import genai
 from config import settings
 from health import mark_cycle_complete, start_health_server
+from redis_client import single_run_lock
 from route_utils import is_within_range_pure as is_within_range
 
 # Initialize Gemini. Without a key, summarize_incident falls back to a templated
@@ -157,16 +158,25 @@ def main():
     print("Starting Incident Notification Worker...")
     print(settings.describe())
 
-    # Cloud Run (and most container platforms) expect the container to answer on
-    # $PORT. The worker has no HTTP API, so this serves liveness/readiness only.
-    if settings.health_server_enabled:
-        start_health_server(settings.health_port, settings.poll_interval_seconds)
-
     if settings.run_once:
         # RUN_ONCE=true is the Cloud Run Job / cron shape: one pass, then exit.
         # Undelivered retries survive via the Redis-backed notification queue.
-        check_and_notify()
+        #
+        # No health server here — nothing probes a task that lives for seconds,
+        # and the scheduler treats a non-zero exit as the failure signal instead.
+        with single_run_lock("worker:poll", ttl_seconds=settings.run_lock_ttl_seconds) as acquired:
+            if not acquired:
+                # The previous execution is still running. Exiting 0 (not an
+                # error) keeps the scheduler's failure alerting meaningful.
+                print("Previous poll cycle still running - skipping this execution.")
+                return
+            check_and_notify()
         return
+
+    # Long-lived mode: container platforms expect the process to answer on $PORT.
+    # The worker has no HTTP API, so this serves liveness/readiness only.
+    if settings.health_server_enabled:
+        start_health_server(settings.health_port, settings.poll_interval_seconds)
 
     while True:
         try:

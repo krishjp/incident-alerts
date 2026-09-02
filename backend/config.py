@@ -74,10 +74,17 @@ class Settings(BaseSettings):
     poll_interval_seconds: int = Field(default=60, alias="POLL_INTERVAL_SECONDS")
     # When true the worker runs a single check_and_notify() pass and exits —
     # the shape a Cloud Run Job / cron invocation wants. Default (false) is the
-    # long-lived loop used by a Cloud Run service or a VM.
+    # long-lived loop used by a plain container host or a VM.
     run_once: bool = Field(default=False, alias="RUN_ONCE")
-    # Cloud Run requires the container to listen on $PORT. The worker has no
-    # real HTTP API, so it serves a liveness endpoint on this port only.
+    # TTL on the Redis lock that stops two scheduled executions overlapping.
+    # Must exceed the worst-case run time (otherwise a slow run's lock expires
+    # and the next execution starts anyway) and stay under the point where
+    # skipping cycles matters. Only consulted in run-once mode.
+    run_lock_ttl_seconds: int = Field(default=300, alias="RUN_LOCK_TTL_SECONDS")
+    # Long-lived mode only (a VM, docker compose, or a background-worker host):
+    # the platform expects something listening on $PORT to probe. The worker has
+    # no real HTTP API, so it serves a liveness endpoint on this port only.
+    # Skipped entirely under run_once, where nothing probes a short-lived task.
     health_port: int = Field(default=8080, alias="PORT")
     health_server_enabled: bool = Field(default=True, alias="HEALTH_SERVER_ENABLED")
 

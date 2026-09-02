@@ -151,8 +151,8 @@ for full requirements and steps.
 ## 🚢 Deploying
 
 See **[DEPLOYMENT.md](DEPLOYMENT.md)** for the full runbook: Next.js on Vercel,
-the Python worker on Cloud Run, managed Postgres and Redis, secrets, CI/CD, and
-rollback.
+the Python worker as a scheduled Cloud Run Job, Neon Postgres, Upstash Redis,
+secrets, CI/CD, and rollback.
 
 ---
 
@@ -177,7 +177,8 @@ Remaining:
 
 1. **Distributed queue architecture** — scale the task queue into distributed
    worker pools (Celery / Redis Streams) so more than one worker instance can
-   run. Until then the worker is pinned to `--max-instances=1`.
+   run. Until then exactly one worker runs at a time, enforced by the Redis run
+   lock in `backend/redis_client.py`.
 2. **Self-hosted routing** — the public Nominatim/OSRM endpoints have no SLA;
    run the `osrm` service in `docker-compose.yml` for real traffic.
 3. **Worker alerting** — `/healthz` reports a stalled loop, but nothing pages

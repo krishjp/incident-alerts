@@ -12,17 +12,17 @@ How this system goes to production, and why each piece is where it is.
                                  │ Prisma (pooled)
                                  ▼
                     ┌──────────────────────────┐
-                    │  Managed Postgres        │  the ONLY link between halves
+                    │  Neon — Postgres         │  the ONLY link between halves
                     └────────────▲─────────────┘
                                  │ SQLAlchemy (pooled)
-                    ┌────────────┴─────────────┐
-   Caltrans KML ───▶│  Cloud Run — worker      │──▶ Twilio SMS
-   Gemini       ───▶│  (backend/, always-on)   │
-                    └────────────┬─────────────┘
+   Cloud Scheduler ─┐ ┌──────────┴─────────────┐
+   (every minute)   └▶│  Cloud Run Job — worker │──▶ Twilio SMS
+   Caltrans KML ───▶ │  (backend/, RUN_ONCE)   │
+   Gemini       ───▶ └────────────┬─────────────┘
                                  │
                     ┌────────────▼─────────────┐
-                    │  Managed Redis (Upstash) │  summary cache + durable
-                    └────────────▲─────────────┘  notification queue
+                    │  Upstash — Redis         │  summary cache, durable
+                    └────────────▲─────────────┘  queue, run lock
                                  │ REST
                     (Vercel: API rate limiting)
 ```
@@ -32,30 +32,40 @@ entire integration surface — which is why the schema lives in two hand-kept
 places (`frontend/prisma/schema.prisma` and `backend/models.py`) and why the
 migrations CI job exists.
 
-## Why the worker is a Cloud Run *service*, not a Job or a Lambda
+## Why the worker is a Cloud Run *Job*, not an always-on service
 
-The worker is a `while True` loop, not a request handler. That rules out
-anything request-triggered by default, and it constrains Cloud Run specifically:
+The worker sleeps for most of every poll interval. Running it as a Cloud Run
+service means `--min-instances=1 --no-cpu-throttling` — an always-allocated
+vCPU, billed continuously, for a process that does a few seconds of real work a
+minute. Running it as a **Job** triggered by Cloud Scheduler bills only the
+seconds it actually runs, which at this workload is a rounding error by
+comparison.
 
-- `--min-instances=1` — without it the service scales to zero and stops polling.
-- `--no-cpu-throttling` — Cloud Run throttles CPU to near-zero between requests
-  by default. A loop that only sleeps and polls receives no requests, so with
-  throttling on it makes almost no progress and alerts silently stop.
-- `--max-instances=1` — two instances would both match every subscription
-  against every incident. They wouldn't *duplicate* SMS (the `NotifiedIncident`
-  fingerprint row is the de-dupe key), but they would race on it and waste
-  Gemini calls. Horizontal scale-out needs the distributed queue described at
-  the bottom of `HANDOFF.md` first.
+`RUN_ONCE=true` (`backend/config.py`) is that shape: one `check_and_notify()`
+pass, then exit. Three things make it safe:
 
-The container listens on `$PORT` purely to satisfy Cloud Run's contract and to
-expose `/healthz` (`backend/health.py`), which reports **stalled** — not merely
-"process alive" — when the loop stops completing cycles.
+- **The notification queue is Redis-backed.** The process dies between cycles,
+  so an in-memory retry queue would drop every pending alert once a minute.
+  Pending and dead-lettered tasks are restored on the next execution.
+- **The Gemini summary cache is in Redis too**, so exiting doesn't throw away
+  the cache and re-bill the same summaries.
+- **A Redis lock prevents overlap.** Cloud Scheduler does not wait for the
+  previous execution to finish. Two concurrent runs would both match every
+  subscription and race on the `NotifiedIncident` fingerprint row — so
+  `single_run_lock()` makes a run that finds the lock held exit 0 immediately.
+  `--task-timeout` and `RUN_LOCK_TTL_SECONDS` should stay aligned (both 300s by
+  default): the timeout caps a wedged execution, the TTL stops a dead one from
+  wedging its successors.
 
-If you would rather not pay for an always-on instance, the alternative is
-already supported: set `RUN_ONCE=true` and deploy as a **Cloud Run Job** on a
-Cloud Scheduler trigger every minute. This is why the notification queue is
-Redis-backed — under `RUN_ONCE` the process exits between cycles, and in-memory
-retries would be lost every minute.
+The long-lived loop is still fully supported — leave `RUN_ONCE` unset and the
+worker runs `while True` and serves `/healthz` (`backend/health.py`), which
+reports **stalled** rather than merely "process alive". That's what
+`docker compose up` uses locally, and what you'd deploy to a VM or to Render's
+Background Worker. Under `RUN_ONCE` the health server is skipped: nothing probes
+a task that lives for seconds, and a non-zero exit is the failure signal instead.
+
+Either way, one worker at a time. Horizontal scale-out needs the distributed
+queue described in `HANDOFF.md` first.
 
 ---
 
@@ -155,7 +165,7 @@ nothing errors. Set it once, from one generated value, in both places.
 
 ---
 
-## 4. Worker on Cloud Run
+## 4. Worker as a Cloud Run Job
 
 One-time setup in the existing GCP project:
 
@@ -165,7 +175,7 @@ REGION=us-west2
 
 gcloud config set project "$PROJECT"
 gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
-    secretmanager.googleapis.com
+    secretmanager.googleapis.com cloudscheduler.googleapis.com
 
 gcloud artifacts repositories create incident-alerts \
     --repository-format=docker --location="$REGION"
@@ -194,7 +204,7 @@ printf '%s' "<value>" | gcloud secrets versions add incident-alerts-database-url
 Grant the Cloud Run runtime service account `roles/secretmanager.secretAccessor`
 (and `roles/cloudsql.client` if you're on Cloud SQL).
 
-### Deploying
+### Deploying the Job
 
 Pushes to `main` that touch `backend/**` trigger
 `.github/workflows/deploy-worker.yml`. It authenticates with **Workload Identity
@@ -208,27 +218,76 @@ Variables):
 Manual deploy, if you'd rather not wire CI up yet:
 
 ```bash
-gcloud run deploy incident-alerts-worker \
+gcloud run jobs deploy incident-alerts-worker \
   --source ./backend --region "$REGION" \
-  --no-allow-unauthenticated \
-  --min-instances=1 --max-instances=1 --no-cpu-throttling \
-  --set-env-vars=ENVIRONMENT=production \
-  --set-secrets=DATABASE_URL=incident-alerts-database-url:latest,PHONE_ENCRYPTION_KEY=incident-alerts-phone-key:latest
+  --cpu=1 --memory=512Mi \
+  --task-timeout=300s --max-retries=0 \
+  --set-env-vars=ENVIRONMENT=production,RUN_ONCE=true,RUN_LOCK_TTL_SECONDS=300 \
+  --set-secrets=DATABASE_URL=incident-alerts-database-url:latest,PHONE_ENCRYPTION_KEY=incident-alerts-phone-key:latest,REDIS_URL=incident-alerts-redis-url:latest
 ```
 
 `ENVIRONMENT=production` is not cosmetic: it activates the extra checks in
 `backend/config.py` that refuse to start on default `postgres/postgres`
 credentials, a `localhost` database URL, or half-configured Twilio credentials.
 
+`--max-retries=0` is deliberate: a failed cycle is picked up by the next
+scheduled run a minute later, and per-alert retries are already handled by the
+notification queue's backoff. Retrying the whole cycle just duplicates work.
+
+### Scheduling it
+
+```bash
+# Service account Scheduler uses to invoke the Job.
+gcloud iam service-accounts create incident-alerts-scheduler \
+    --display-name="Invokes the incident-alerts worker job"
+
+SCHEDULER_SA="incident-alerts-scheduler@$PROJECT.iam.gserviceaccount.com"
+
+gcloud run jobs add-iam-policy-binding incident-alerts-worker \
+    --region="$REGION" \
+    --member="serviceAccount:$SCHEDULER_SA" \
+    --role="roles/run.invoker"
+
+gcloud scheduler jobs create http incident-alerts-worker-tick \
+    --location="$REGION" \
+    --schedule="* * * * *" \
+    --uri="https://$REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT/jobs/incident-alerts-worker:run" \
+    --http-method=POST \
+    --oauth-service-account-email="$SCHEDULER_SA"
+```
+
+`* * * * *` is once a minute, matching the old in-process loop. Cost scales
+linearly with frequency and the Caltrans feed doesn't change second-to-second —
+`*/5 * * * *` cuts the bill ~5x if a five-minute alert delay is acceptable.
+
 ### Verifying
 
 ```bash
-gcloud run services logs read incident-alerts-worker --region "$REGION" --limit 50
+# Run one cycle immediately and wait for it.
+gcloud run jobs execute incident-alerts-worker --region "$REGION" --wait
+
+# Recent executions and their exit status.
+gcloud run jobs executions list --job=incident-alerts-worker --region "$REGION" --limit=5
+
+# Logs from the most recent execution.
+gcloud logging read \
+  'resource.type=cloud_run_job AND resource.labels.job_name=incident-alerts-worker' \
+  --limit=50 --format='value(textPayload)'
 ```
 
-A healthy start prints the redacted config block from `settings.describe()`,
-then `Checking active subscriptions...` once per `POLL_INTERVAL_SECONDS`.
-`/healthz` returns 503 once the loop misses three consecutive cycles.
+A healthy execution prints the redacted config block from `settings.describe()`,
+then `Checking active subscriptions...`, then exits 0. `Previous poll cycle
+still running — skipping this execution.` is also a success: it means the run
+lock did its job, and a *sustained* run of those means cycles are taking longer
+than the schedule interval.
+
+### If you'd rather run it long-lived
+
+The `while True` loop is still supported and is what `docker compose` runs
+locally. On a VM, or on a platform with a first-class background-worker type
+(Render, Fly), leave `RUN_ONCE` unset, expose `PORT`, and point the platform's
+health check at `/healthz` — it returns 503 once the loop misses three poll
+intervals, which a bare process check would never catch.
 
 ---
 
@@ -264,7 +323,8 @@ land in the queue's Dead Letter Queue rather than reaching users.
 Tracked in `HANDOFF.md`; the ones that matter most at deploy time:
 
 - **Single worker instance.** Scale-out needs the distributed queue (Celery /
-  Redis Streams) before `--max-instances` can rise above 1.
+  Redis Streams) before concurrent executions are safe; until then the run lock
+  serializes them.
 - **Public routing services.** Nominatim and the OSRM demo server are
   rate-limited and SLA-free. The `RouteCache` table plus the 1 req/s throttle
   keep normal usage well inside their limits, but a self-hosted OSRM (or a

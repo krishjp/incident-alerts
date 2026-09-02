@@ -1,7 +1,15 @@
 name: Deploy worker
 
-# Deploys the Python polling worker to Cloud Run. The Next.js frontend is NOT
-# deployed here — Vercel builds it from its own Git integration.
+# Deploys the Python polling worker as a Cloud Run *Job*, executed once a minute
+# by Cloud Scheduler. The Next.js frontend is NOT deployed here — Vercel builds
+# it from its own Git integration.
+#
+# Why a Job rather than an always-on service: the worker sleeps for most of every
+# poll interval, and Cloud Run bills an always-allocated CPU for that idle time.
+# One short execution per interval costs a small fraction of the same work, and
+# `RUN_ONCE=true` (backend/config.py) is exactly that shape. Overlapping
+# executions are prevented by a Redis lock in the worker, not by this workflow —
+# Cloud Scheduler does not wait for the previous run to finish.
 #
 # Requires these repository settings (see DEPLOYMENT.md for how to create them):
 #   vars.GCP_PROJECT_ID          e.g. incident-alerts-routes
@@ -9,10 +17,10 @@ name: Deploy worker
 #   vars.GCP_SERVICE_ACCOUNT     deployer service account email
 #   vars.GCP_WORKLOAD_IDENTITY_PROVIDER
 #                                projects/<n>/locations/global/workloadIdentityPools/<pool>/providers/<provider>
-#   vars.CLOUD_SQL_INSTANCE      project:region:instance (omit if not using Cloud SQL)
+#   vars.CLOUD_SQL_INSTANCE      project:region:instance (omit unless using Cloud SQL)
 #
-# Runtime secrets are NOT passed from GitHub: they are read from Secret Manager
-# by the Cloud Run service itself, so this workflow never handles them.
+# Runtime secrets are NOT passed from GitHub: the Job reads them from Secret
+# Manager itself, so this workflow never handles them.
 
 on:
   push:
@@ -23,7 +31,7 @@ on:
   workflow_dispatch:
 
 env:
-  SERVICE: incident-alerts-worker
+  JOB: incident-alerts-worker
 
 # Workload Identity Federation instead of a long-lived JSON key: no GCP
 # credential is ever stored in this repository.
@@ -33,7 +41,7 @@ permissions:
 
 jobs:
   deploy:
-    name: Build and deploy to Cloud Run
+    name: Build and deploy Cloud Run Job
     runs-on: ubuntu-latest
     environment: production
 
@@ -56,40 +64,42 @@ jobs:
           IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/incident-alerts/worker
         run: |
           # Tag with the commit SHA so a bad deploy can be rolled back to an
-          # exact revision rather than a moving "latest".
+          # exact image rather than a moving "latest".
           docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" ./backend
           docker push "$IMAGE:${{ github.sha }}"
           docker push "$IMAGE:latest"
 
-      - name: Deploy to Cloud Run
+      - name: Deploy Cloud Run Job
         env:
           IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/incident-alerts/worker
         run: |
-          # --min-instances=1 with --no-cpu-throttling: this is a polling loop,
-          # not a request handler. Without both flags Cloud Run scales it to zero
-          # and freezes its CPU between requests, and no alerts are ever sent.
-          gcloud run deploy "$SERVICE" \
+          # `jobs deploy` creates the job on first run and updates it after, so
+          # this workflow is safe to run against a fresh project.
+          #
+          # --task-timeout caps a wedged execution so it cannot overlap the next
+          # one indefinitely; keep it at or below RUN_LOCK_TTL_SECONDS.
+          # --max-retries=0: a failed cycle is retried by the next scheduled run
+          # a minute later, and the notification queue already handles per-alert
+          # retries with backoff. Retrying the whole cycle would duplicate work.
+          gcloud run jobs deploy "$JOB" \
             --image "$IMAGE:${{ github.sha }}" \
             --project "${{ vars.GCP_PROJECT_ID }}" \
             --region "${{ vars.GCP_REGION }}" \
-            --platform managed \
-            --no-allow-unauthenticated \
-            --min-instances=1 \
-            --max-instances=1 \
-            --no-cpu-throttling \
+            --cpu=1 \
             --memory=512Mi \
-            --port=8080 \
-            --set-env-vars="ENVIRONMENT=production,POLL_INTERVAL_SECONDS=60" \
+            --task-timeout=300s \
+            --max-retries=0 \
+            --set-env-vars="ENVIRONMENT=production,RUN_ONCE=true,RUN_LOCK_TTL_SECONDS=300" \
             --set-secrets="DATABASE_URL=incident-alerts-database-url:latest,PHONE_ENCRYPTION_KEY=incident-alerts-phone-key:latest,REDIS_URL=incident-alerts-redis-url:latest,GEMINI_API_KEY=incident-alerts-gemini-key:latest,TWILIO_ACCOUNT_SID=incident-alerts-twilio-sid:latest,TWILIO_AUTH_TOKEN=incident-alerts-twilio-token:latest,TWILIO_PHONE_NUMBER=incident-alerts-twilio-number:latest" \
-            ${{ vars.CLOUD_SQL_INSTANCE && format('--add-cloudsql-instances={0}', vars.CLOUD_SQL_INSTANCE) || '' }}
+            ${{ vars.CLOUD_SQL_INSTANCE && format('--set-cloudsql-instances={0}', vars.CLOUD_SQL_INSTANCE) || '' }}
 
-      - name: Verify the new revision is serving
+      - name: Smoke-test the new image
         run: |
-          # max-instances=1 means the old revision is torn down before the new
-          # one is ready; a failed rollout must fail the workflow loudly.
-          gcloud run services describe "$SERVICE" \
+          # Runs one real poll cycle and waits for it. A Job, unlike a service,
+          # has no health check and no traffic-shifting rollout — without this,
+          # a broken image would sit unnoticed until the next scheduled run
+          # failed silently. --wait makes a non-zero task exit fail the deploy.
+          gcloud run jobs execute "$JOB" \
             --project "${{ vars.GCP_PROJECT_ID }}" \
             --region "${{ vars.GCP_REGION }}" \
-            --format="value(status.conditions[0].type,status.conditions[0].status)" \
-            | tee /tmp/status
-          grep -q "Ready	True" /tmp/status
+            --wait

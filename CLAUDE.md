@@ -133,6 +133,13 @@ production deploys should configure Upstash.
 prefer `REDIS_URL` (a single `rediss://` string), which takes precedence over host/port.
 
 ### Deployment
-See `DEPLOYMENT.md`. Frontend → Vercel; worker → Cloud Run, which needs `--min-instances=1`,
-`--no-cpu-throttling` (a polling loop receives no requests, so throttled CPU stops it making progress) and
-`--max-instances=1` (multiple instances would race on the `NotifiedIncident` fingerprint row).
+See `DEPLOYMENT.md`. Frontend → Vercel; datastores → Neon (Postgres) + Upstash (Redis); worker → a **Cloud Run
+Job** run once a minute by Cloud Scheduler with `RUN_ONCE=true`, rather than an always-on service — the loop
+sleeps through most of each interval, and a service would bill an always-allocated vCPU for that.
+
+Under `RUN_ONCE` the process exits between cycles, so three things carry state across executions and must stay
+that way: the Redis-backed notification queue (pending retries), the Redis summary cache (avoids re-billing
+Gemini), and `single_run_lock()` in `redis_client.py`. That lock matters because Cloud Scheduler does not wait
+for the previous execution — two concurrent runs would race on the `NotifiedIncident` fingerprint row. Keep
+`--task-timeout` and `RUN_LOCK_TTL_SECONDS` aligned. Only ever run one worker at a time until the distributed
+queue in `HANDOFF.md` exists.
