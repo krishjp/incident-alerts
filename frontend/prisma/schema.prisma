@@ -5,6 +5,11 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  // Migrations need a direct (non-pooled) connection: PgBouncer-style poolers
+  // in transaction mode can't run the advisory locks and DDL a migration issues.
+  // Falls back to DATABASE_URL when unset, which is correct for a direct-connect
+  // database (local docker-compose, Cloud SQL without a pooler).
+  directUrl = env("DIRECT_URL")
 }
 
 model Account {
@@ -69,6 +74,25 @@ model VerificationToken {
   expires    DateTime
 
   @@unique([identifier, token])
+}
+
+/// Persistent cache of generated route polylines, keyed by a normalized
+/// origin+destination pair. Subscription creation would otherwise hit
+/// Nominatim/OSRM (or the Google Directions API) on every request, which
+/// rate-limits aggressively (HTTP 429) and costs money respectively.
+/// Two users commuting the same corridor now share one lookup.
+model RouteCache {
+  /// sha256 of "<normalized origin>|<normalized destination>|<provider>"
+  key         String   @id
+  origin      String
+  destination String
+  provider    String   // "google" | "osrm"
+  polyline    String   @db.Text
+  hits        Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([createdAt])
 }
 
 model NotifiedIncident {

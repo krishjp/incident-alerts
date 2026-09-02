@@ -20,6 +20,13 @@ let validated = false;
 export function assertValidEnv() {
     if (validated) return;
 
+    // Skip during `next build`. Next.js imports every route module to collect
+    // page data, which would otherwise make a successful build depend on having
+    // production runtime secrets present in the build environment — they aren't
+    // on Vercel by default, and shouldn't need to be. Validation still runs on
+    // the first real request, which is where bad config actually matters.
+    if (process.env.NEXT_PHASE === "phase-production-build") return;
+
     const missing = REQUIRED_KEYS.filter((key) => !process.env[key]);
     if (missing.length > 0) {
         throw new Error(`Missing required environment variables: ${missing.join(", ")}`);

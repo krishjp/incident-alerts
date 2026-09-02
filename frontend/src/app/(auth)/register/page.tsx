@@ -1,13 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { signIn } from "next-auth/react";
 import { AlertCircle, Chrome } from "lucide-react";
 
 export default function Register() {
-    const router = useRouter();
     const [name, setName] = useState("");
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
@@ -38,8 +36,8 @@ export default function Register() {
                 setError(data.error || "An error occurred");
                 setLoading(false);
             }
-        } catch (err: any) {
-            setError(err.message || "Something went wrong.");
+        } catch (err) {
+            setError(err instanceof Error ? err.message : "Something went wrong.");
             setLoading(false);
         }
     };

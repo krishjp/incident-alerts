@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Plus, Trash2, ShieldAlert, Route } from "lucide-react";
+import { Plus, Trash2, ShieldAlert, Route, Pause, Play } from "lucide-react";
 
 type Subscription = {
     id: string;
@@ -10,6 +10,7 @@ type Subscription = {
     area: string;
     startTime: string;
     endTime: string;
+    isActive: boolean;
 };
 
 export default function Dashboard() {
@@ -18,6 +19,8 @@ export default function Dashboard() {
     const [phone, setPhone] = useState("");
     const [form, setForm] = useState({ origin: "", destination: "", area: "Los Angeles", startTime: "07:00", endTime: "09:00" });
     const [adding, setAdding] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [notice, setNotice] = useState<string | null>(null);
 
     useEffect(() => {
         fetchSubs();
@@ -25,9 +28,15 @@ export default function Dashboard() {
     }, []);
 
     const fetchSubs = async () => {
-        const res = await fetch("/api/subscriptions");
-        setSubs(await res.json());
-        setLoading(false);
+        try {
+            const res = await fetch("/api/subscriptions");
+            const data = await res.json();
+            setSubs(Array.isArray(data) ? data : []);
+        } catch {
+            setError("Could not load your subscriptions.");
+        } finally {
+            setLoading(false);
+        }
     };
 
     const fetchPhone = async () => {
@@ -37,44 +46,84 @@ export default function Dashboard() {
     };
 
     const savePhone = async () => {
-        await fetch("/api/user", { method: "POST", body: JSON.stringify({ phone }) });
-        alert("Phone saved!");
+        const res = await fetch("/api/user", { method: "POST", body: JSON.stringify({ phone }) });
+        if (res.ok) {
+            setNotice("Phone number saved.");
+            setTimeout(() => setNotice(null), 3000);
+        } else {
+            setError("Could not save your phone number.");
+        }
     };
 
     const addRoute = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!form.origin || !form.destination || !form.area) return;
         setAdding(true);
+        setError(null);
         try {
             const res = await fetch("/api/subscriptions", {
                 method: "POST", body: JSON.stringify(form)
             });
             if (!res.ok) {
                 const err = await res.json();
-                alert(err.error || "Failed to add route.");
+                setError(err.error || "Failed to add route.");
             } else {
                 const newSub = await res.json();
                 setSubs([...subs, newSub]);
                 setForm({ ...form, origin: "", destination: "" }); // reset text fields
             }
-        } catch (e) {
-            alert("Error adding route.");
+        } catch {
+            setError("Error adding route.");
         } finally {
             setAdding(false);
         }
     };
 
+    // Pausing keeps the route (and its polyline) but stops the worker alerting
+    // on it — the common case for a commute you're not driving this week.
+    const toggleActive = async (sub: Subscription) => {
+        const next = !sub.isActive;
+        setSubs(subs.map(s => (s.id === sub.id ? { ...s, isActive: next } : s)));
+
+        const res = await fetch("/api/subscriptions", {
+            method: "PATCH",
+            body: JSON.stringify({ id: sub.id, isActive: next }),
+        });
+        if (!res.ok) {
+            // Roll back the optimistic update.
+            setSubs(subs.map(s => (s.id === sub.id ? { ...s, isActive: sub.isActive } : s)));
+            setError("Could not update that route.");
+        }
+    };
+
     const deleteRoute = async (id: string) => {
-        await fetch(`/api/subscriptions?id=${id}`, { method: "DELETE" });
-        setSubs(subs.filter(s => s.id !== id));
+        const res = await fetch(`/api/subscriptions?id=${id}`, { method: "DELETE" });
+        if (res.ok) {
+            setSubs(subs.filter(s => s.id !== id));
+        } else {
+            setError("Could not delete that route.");
+        }
     };
 
     return (
         <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
             <h1 className="text-3xl font-extrabold tracking-tight mb-2">Monitored Routes</h1>
             <p className="text-slate-500 mb-8 max-w-2xl">
-                Add the Point A and Point B of your commute. You'll only be alerted during the specified time windows.
+                Add the Point A and Point B of your commute. You&apos;ll only be alerted during the specified time windows.
             </p>
+
+            {error && (
+                <div role="alert" className="mb-6 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                    <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span className="flex-1">{error}</span>
+                    <button onClick={() => setError(null)} className="font-semibold text-red-600 hover:text-red-800">Dismiss</button>
+                </div>
+            )}
+            {notice && (
+                <div role="status" className="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+                    {notice}
+                </div>
+            )}
 
             {/* Phone number setup */}
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 mb-8 flex flex-col md:flex-row md:items-end gap-4">
@@ -140,13 +189,13 @@ export default function Dashboard() {
             ) : subs.length === 0 ? (
                 <div className="bg-slate-100 rounded-2xl p-12 text-center text-slate-500 border border-slate-200 border-dashed">
                     <ShieldAlert className="w-12 h-12 text-slate-400 mx-auto mb-3" />
-                    <p>You aren't monitoring any routes yet.</p>
+                    <p>You aren&apos;t monitoring any routes yet.</p>
                 </div>
             ) : (
                 <div className="flex flex-col gap-3">
                     {subs.map(sub => (
-                        <div key={sub.id} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between group hover:border-emerald-200 transition-colors">
-                            <div className="flex items-start gap-3">
+                        <div key={sub.id} className={`bg-white p-4 rounded-xl border shadow-sm flex items-center justify-between group transition-colors ${sub.isActive ? "border-slate-200 hover:border-emerald-200" : "border-slate-200 bg-slate-50"}`}>
+                            <div className={`flex items-start gap-3 ${sub.isActive ? "" : "opacity-60"}`}>
                                 <div className="p-2 bg-slate-100 rounded-lg mt-1">
                                     <Route className="w-5 h-5 text-slate-500" />
                                 </div>
@@ -157,17 +206,34 @@ export default function Dashboard() {
                                         <span className="font-bold text-lg">{sub.destination}</span>
                                         <span className="text-xs px-2 py-1 bg-slate-100 rounded-md font-medium text-slate-600">{sub.area}</span>
                                     </div>
-                                    <div className="text-sm text-slate-500 mt-1 font-medium bg-emerald-50 inline-block px-2 py-0.5 rounded text-emerald-700">
-                                        Active between {sub.startTime} and {sub.endTime}
-                                    </div>
+                                    {sub.isActive ? (
+                                        <div className="text-sm mt-1 font-medium bg-emerald-50 inline-block px-2 py-0.5 rounded text-emerald-700">
+                                            Alerting between {sub.startTime} and {sub.endTime}
+                                        </div>
+                                    ) : (
+                                        <div className="text-sm mt-1 font-medium bg-slate-200 inline-block px-2 py-0.5 rounded text-slate-600">
+                                            Paused — no alerts ({sub.startTime}–{sub.endTime})
+                                        </div>
+                                    )}
                                 </div>
                             </div>
-                            <button
-                                onClick={() => deleteRoute(sub.id)}
-                                className="text-slate-400 hover:text-red-500 p-2 rounded-lg hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
-                            >
-                                <Trash2 className="w-5 h-5" />
-                            </button>
+                            <div className="flex items-center gap-1">
+                                <button
+                                    onClick={() => toggleActive(sub)}
+                                    aria-label={sub.isActive ? "Pause alerts for this route" : "Resume alerts for this route"}
+                                    title={sub.isActive ? "Pause alerts" : "Resume alerts"}
+                                    className="text-slate-400 hover:text-emerald-600 p-2 rounded-lg hover:bg-emerald-50 transition-colors"
+                                >
+                                    {sub.isActive ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
+                                </button>
+                                <button
+                                    onClick={() => deleteRoute(sub.id)}
+                                    aria-label="Delete this route"
+                                    className="text-slate-400 hover:text-red-500 p-2 rounded-lg hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                                >
+                                    <Trash2 className="w-5 h-5" />
+                                </button>
+                            </div>
                         </div>
                     ))}
                 </div>
