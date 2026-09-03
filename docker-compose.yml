@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: incidentsdb
     ports:
-      - "5433:5432"
+      - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -20,7 +20,7 @@ services:
     image: redis:7-alpine
     container_name: incident-alerts-redis-1
     ports:
-      - "6380:6379"
+      - "6381:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -36,7 +36,7 @@ services:
     env_file:
       - ./frontend/.env
     environment:
-      # frontend/.env's DATABASE_URL points at 127.0.0.1:5433 for host-side
+      # frontend/.env's DATABASE_URL points at 127.0.0.1:5434 for host-side
       # `npx prisma db push` / local dev; inside the compose network it must
       # resolve to the postgres service name instead.
       DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/incidentsdb?schema=public"
@@ -49,7 +49,13 @@ services:
       postgres:
         condition: service_healthy
 
+  # One check_and_notify() pass, then exit — the same shape the Cloud Run Job
+  # runs in production. Not part of `docker compose up`'s default set (see
+  # `profiles` below): invoke it with `docker compose run --rm worker`, or run
+  # it on a timer with scripts/run-worker-loop.sh (bash) or
+  # scripts/run-worker-loop.ps1 (PowerShell) to imitate Cloud Scheduler locally.
   worker:
+    profiles: ["job"]
     build:
       context: ./backend
     container_name: incident-alerts-worker-1
@@ -58,13 +64,9 @@ services:
     environment:
       DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/incidentsdb"
       # Inside the compose network Redis is reached on its container port, not
-      # the 6380 the host sees.
+      # the 6381 the host sees.
       REDIS_HOST: "redis"
       REDIS_PORT: "6379"
-      PORT: "8080"
-    ports:
-      # Liveness endpoint only (backend/health.py) — the worker has no HTTP API.
-      - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy

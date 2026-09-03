@@ -12,19 +12,25 @@ A full-stack Next.js and Python web application that dynamically checks **Caltra
 * **Redis AI Summary Cache ([backend/cache_handler.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/cache_handler.py))**: Redis-backed summary caching with 24-hour TTL expiration (`EXPIRE`) and in-memory fallback to avoid duplicate Gemini AI API calls across distributed processes.
 * **Asynchronous Notification Queue with Retries & DLQ ([backend/notification_queue.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/notification_queue.py))**: Decoupled task queue supporting exponential backoff retries and Dead Letter Queue (DLQ) isolation for failed SMS dispatches.
 * **Real-Time Next.js Dashboard**: Modern web application to register routes, set active commute hours (e.g. `07:00` - `09:00`), and manage phone numbers.
-* **Database & Infrastructure (PostgreSQL + Redis)**: Docker containerized PostgreSQL on host port `5433` and Redis on host port `6380` (container port `6379` is unchanged; set `REDIS_PORT=6380` in `backend/.env` for local, non-Docker worker runs).
+* **Database & Infrastructure (PostgreSQL + Redis)**: Docker containerized PostgreSQL on host port `5434` and Redis on host port `6381` (container port `6379` is unchanged; set `REDIS_PORT=6381` in `backend/.env` for local, non-Docker worker runs).
 * **Pytest Testing Suite**: Fully configured pytest suite (**26 passed in 8.5s**) covering Redis cache get/set/hashing, Caltrans API parsing, area filtering, notification queue retries, DLQ handling, bounding box rejection, and street address route matching.
 
 ---
 
 ## 🏗️ Project Structure
 
-* **`docker-compose.yml`**: PostgreSQL (`5433`) and Redis (`6379`) container configuration.
+* **`docker-compose.yml`**: PostgreSQL (`5434`) and Redis (`6381`); the `worker` service sits behind a `job`
+  profile, so it isn't started by `docker compose up -d` — invoke it with `docker compose run --rm worker`
+  or via `scripts/run-worker-loop.sh`/`.ps1`.
+* **`scripts/`**: `run-worker-loop.sh` / `.ps1` — loop `docker compose run --rm worker` on an interval,
+  imitating Cloud Scheduler locally instead of running an always-on worker container.
 * **`frontend/`**: Next.js client application containing:
   * `prisma/schema.prisma`: Data models for User, Account, Session, RouteSubscription, and NotifiedIncident.
   * `src/app/`: Next.js App Router layout, authentication, and subscription UI.
+  * `scripts/seed-demo-accounts.js`: Seeds demo accounts at different setup-funnel stages for local QA/demos
+    (`npm run seed:demo`) — see Step 4 below.
 * **`backend/`**: Background Python worker containing:
-  * `main.py`: Main execution loop checking active subscriptions, ingesting feeds via Caltrans client, and queuing alerts.
+  * `main.py`: Single-pass entrypoint — checks active subscriptions, ingests feeds via the Caltrans client, and queues alerts, then exits. There is no long-lived loop mode; something external (Cloud Scheduler, or `scripts/run-worker-loop.sh`/`.ps1` locally) invokes it repeatedly.
   * `caltrans_client.py`: API Handler fetching and parsing live Caltrans QuickMap XML/KML feeds.
   * `cache_handler.py`: Redis cache module with 24h TTL and graceful in-memory fallback.
   * `notification_queue.py`: Task queue for SMS dispatching with exponential backoff retries and Dead Letter Queue.
@@ -47,12 +53,24 @@ A full-stack Next.js and Python web application that dynamically checks **Caltra
 ---
 
 ### Step 1: Database & Cache Initialization
-Spin up PostgreSQL and Redis containers:
+Spin up PostgreSQL, Redis, and a production-build frontend container:
 ```bash
 docker compose up -d
 ```
-* PostgreSQL: `127.0.0.1:5433`
-* Redis: `127.0.0.1:6380` (container port `6379` is unchanged — see `docker-compose.yml`)
+* PostgreSQL: `127.0.0.1:5434`
+* Redis: `127.0.0.1:6381` (container port `6379` is unchanged — see `docker-compose.yml`)
+* Frontend: `127.0.0.1:3000` (built from `frontend/Dockerfile`, `NODE_ENV=production`)
+
+The `worker` service is **not** started by this — see Step 4.
+
+If you're actively developing the frontend, stop the container and use `npm run dev` instead (Step 3) so
+you get hot reload; running both binds port 3000 twice:
+```bash
+docker compose stop frontend
+```
+After editing `frontend/.env`, `docker compose restart frontend` reuses the environment baked in at
+container creation — it does **not** reread `env_file`. Use `docker compose up -d --force-recreate frontend`
+to pick up `.env` changes.
 
 ---
 
@@ -65,7 +83,7 @@ cp frontend/.env.example frontend/.env
 ```
 
 At minimum, for local dev:
-- `backend/.env`: set `REDIS_PORT=6380` (matches the Docker mapping above); `GEMINI_API_KEY` can be left
+- `backend/.env`: set `REDIS_PORT=6381` (matches the Docker mapping above); `GEMINI_API_KEY` can be left
   unset (falls back to a templated mock summary).
 - `frontend/.env`: set `NEXTAUTH_SECRET` (>=32 chars, e.g. `openssl rand -hex 32`) and
   `PHONE_ENCRYPTION_KEY` (64-char hex, `openssl rand -hex 32`) — this key **must match** the same value in
@@ -100,29 +118,45 @@ Access the dashboard at [http://localhost:3000](http://localhost:3000).
 
 ---
 
-### Step 4: Backend Worker Setup & Execution
+### Step 4: Seed Demo Accounts (optional)
+
+For manual QA or demos, seed five accounts covering different points in the setup funnel — a fresh signup
+with nothing configured, a route added but no phone, a fully-configured-but-paused route, a fully active
+route, and a multi-route power user:
+```bash
+cd frontend
+npm run seed:demo
+```
+All seeded accounts share the password `DemoPass123!`. The script is idempotent (safe to re-run) and
+refuses to run against anything but a development/test database (`ENVIRONMENT` check). The "active" accounts
+reuse a real polyline already in the dev DB so they match `backend/fixtures/torrance_hb_405_test.kml` without
+a live routing-API call — see `frontend/scripts/seed-demo-accounts.js` for the full account list.
+
+---
+
+### Step 5: Backend Worker Setup & Execution
 ```bash
 cd backend
 uv venv
 uv sync
-uv run python main.py          # long-lived polling loop
-RUN_ONCE=true uv run python main.py   # single pass, then exit (useful for debugging)
+uv run python main.py          # single pass, then exit — there is no long-lived loop mode
 ```
 
 The worker prints a redacted configuration summary at startup and refuses to
-start on invalid config (see `backend/config.py`). It also serves a liveness
-endpoint on `PORT` (default 8080):
+start on invalid config (see `backend/config.py`), then does one poll pass and
+exits. Something external calls it repeatedly — Cloud Scheduler invoking a
+Cloud Run Job in production, or locally:
 
 ```bash
-curl http://localhost:8080/healthz
+./scripts/run-worker-loop.sh          # or scripts/run-worker-loop.ps1 on Windows
 ```
 
-which returns 503 — not just "process is up" — once the poll loop stops
-completing cycles.
+which loops `docker compose run --rm worker` on an interval (default 60s),
+imitating the production schedule instead of running an always-on container.
 
 ---
 
-### Step 5: Running Tests (Pytest)
+### Step 6: Running Tests (Pytest)
 
 Run all unit and integration tests:
 ```bash
@@ -132,7 +166,7 @@ uv run pytest
 
 ---
 
-### Step 6: Local Testing with Injected Incidents
+### Step 7: Local Testing with Injected Incidents
 
 To exercise the full worker pipeline (spatial matching, dedup/update alerts, Gemini summaries, the
 notification queue) without waiting for a real Caltrans incident, point the backend at a local KML fixture
@@ -181,5 +215,5 @@ Remaining:
    lock in `backend/redis_client.py`.
 2. **Self-hosted routing** — the public Nominatim/OSRM endpoints have no SLA;
    run the `osrm` service in `docker-compose.yml` for real traffic.
-3. **Worker alerting** — `/healthz` reports a stalled loop, but nothing pages
-   anyone on it yet.
+3. **Worker alerting** — a failed pass surfaces only as a non-zero exit in
+   Cloud Run's execution history; nothing pages anyone on it yet.

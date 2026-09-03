@@ -4,10 +4,10 @@ name: Deploy worker
 # by Cloud Scheduler. The Next.js frontend is NOT deployed here — Vercel builds
 # it from its own Git integration.
 #
-# Why a Job rather than an always-on service: the worker sleeps for most of every
-# poll interval, and Cloud Run bills an always-allocated CPU for that idle time.
-# One short execution per interval costs a small fraction of the same work, and
-# `RUN_ONCE=true` (backend/config.py) is exactly that shape. Overlapping
+# Why a Job rather than an always-on service: the worker does one
+# check_and_notify() pass and exits — there is no long-lived loop mode — and
+# Cloud Run bills an always-allocated CPU for a service the whole time it's up,
+# most of which would be idle between scheduled invocations. Overlapping
 # executions are prevented by a Redis lock in the worker, not by this workflow —
 # Cloud Scheduler does not wait for the previous run to finish.
 #
@@ -89,7 +89,7 @@ jobs:
             --memory=512Mi \
             --task-timeout=300s \
             --max-retries=0 \
-            --set-env-vars="ENVIRONMENT=production,RUN_ONCE=true,RUN_LOCK_TTL_SECONDS=300" \
+            --set-env-vars="ENVIRONMENT=production,RUN_LOCK_TTL_SECONDS=300" \
             --set-secrets="DATABASE_URL=incident-alerts-database-url:latest,PHONE_ENCRYPTION_KEY=incident-alerts-phone-key:latest,REDIS_URL=incident-alerts-redis-url:latest,GEMINI_API_KEY=incident-alerts-gemini-key:latest,TWILIO_ACCOUNT_SID=incident-alerts-twilio-sid:latest,TWILIO_AUTH_TOKEN=incident-alerts-twilio-token:latest,TWILIO_PHONE_NUMBER=incident-alerts-twilio-number:latest" \
             ${{ vars.CLOUD_SQL_INSTANCE && format('--set-cloudsql-instances={0}', vars.CLOUD_SQL_INSTANCE) || '' }}
 

@@ -1,6 +1,6 @@
 # Project Handoff Document: Incident Alerts 🚗⚠️
 
-**Last Updated:** September 2, 2026
+**Last Updated:** September 3, 2026
 
 ## 🎯 Project Goals
 The goal of **Incident Alerts** is to provide real-time, automated traffic incident alerts to users based on their specific commute routes and active hours.
@@ -18,7 +18,7 @@ Key capabilities:
 
 - [x] **Project Structure & Architecture**: Established full-stack structure with Next.js frontend, Python backend worker, PostgreSQL database, and Redis cache.
 - [x] **Database & Infrastructure**:
-  - `docker-compose.yml` updated with PostgreSQL (port `5433`) and Redis (port `6379`).
+  - `docker-compose.yml` updated with PostgreSQL (port `5434`) and Redis (port `6381`).
   - `.env` files generated for both `frontend/` and `backend/`.
   - Prisma schema (`prisma/schema.prisma`) defined for Users, RouteSubscriptions, Accounts, Sessions, and NotifiedIncidents.
   - SQLAlchemy models (`backend/models.py`) aligned with Prisma schema tables.
@@ -61,10 +61,17 @@ Key capabilities:
   - Pending and dead-lettered tasks are mirrored into Redis hashes (`TaskStore`) and restored at startup, so an alert enqueued just before a redeploy, scale-to-zero, or instance replacement is still delivered afterwards.
   - Persistence is opt-in per instance (`persist=True` on the deployed singleton) so tests never inherit a developer's local Redis state; every Redis failure degrades to in-process-only behaviour.
   - Connection details centralized in [backend/redis_client.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/redis_client.py), which also adds `REDIS_URL` support (`rediss://`) for managed providers.
-- [x] **Worker Liveness Endpoint ([backend/health.py](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/backend/health.py))**:
-  - `/healthz` on `$PORT`, served from a daemon thread — satisfies Cloud Run's "must listen on PORT" contract for a process that has no HTTP API.
-  - Reports **stalled** (503) once the loop misses three poll intervals, so a wedged-but-alive worker is taken out of service rather than silently failing to alert.
-  - Added `RUN_ONCE=true` for a single-pass invocation (Cloud Run Job / cron shape).
+- [x] **Worker Liveness Endpoint (`backend/health.py`, since removed)**:
+  - Originally added a `/healthz` on `$PORT` for the long-lived `while True` loop, reporting **stalled** (503) once
+    the loop missed three poll intervals.
+  - Superseded once the worker moved to single-pass-then-exit as its only mode (see "One-Shot-Only Worker" below):
+    nothing probes a task that lives for seconds, and the scheduler's exit code is the failure signal instead.
+    `health.py` and its tests were deleted rather than kept dead.
+- [x] **One-Shot-Only Worker**:
+  - Removed the `while True: ... sleep(POLL_INTERVAL_SECONDS)` long-lived loop mode entirely — `main.py` now
+    always does one `check_and_notify()` pass and exits (previously gated behind `RUN_ONCE=true`).
+  - Locally, `scripts/run-worker-loop.sh`/`.ps1` (`docker compose run --rm worker` on a timer) imitate the same
+    Cloud Scheduler → Cloud Run Job shape instead of running an always-on `worker` container.
 - [x] **Route Polyline Caching & External Rate-Limit Protection**:
   - New `RouteCache` Prisma model: origin+destination+provider → polyline, keyed by a normalized-address hash, so a repeated commute never re-hits the routing provider ([frontend/src/lib/route-cache.ts](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/frontend/src/lib/route-cache.ts)).
   - Nominatim calls are serialized through a 1 req/s gate (its published policy — exceeding it gets the egress IP blocked, and on Vercel that IP is shared) with exponential-backoff retry on 429/5xx.
@@ -79,10 +86,22 @@ Key capabilities:
 - [x] **Deployment Path ([DEPLOYMENT.md](file:///C:/Users/kpatel/Documents/sideRunners/incident-alerts/DEPLOYMENT.md))**:
   - Prisma **migration history** (`frontend/prisma/migrations/`) replacing `db push`, with `directUrl` for pooler-incompatible DDL.
   - Vercel config for the frontend (`frontend/vercel.json`, `vercel-build` script running `migrate deploy`); build-time env validation skipped via `NEXT_PHASE` so builds don't require runtime secrets.
-  - Worker deployed as a **Cloud Run Job** driven by Cloud Scheduler (`RUN_ONCE=true`) rather than an always-on service — the loop sleeps through most of each interval, and a service bills an always-allocated vCPU for that idle time. Secret Manager wiring; non-root, healthchecked Docker image.
+  - Worker deployed as a **Cloud Run Job** driven by Cloud Scheduler rather than an always-on service — the worker exits between passes, and a service would bill an always-allocated vCPU for that idle time. Secret Manager wiring; non-root Docker image.
   - `single_run_lock()` (Redis `SET NX EX`) stops two scheduled executions overlapping, since Cloud Scheduler does not wait for the previous run and two concurrent runs would race on the `NotifiedIncident` fingerprint row.
   - CI (`.github/workflows/ci.yml`): pytest, lint, typecheck, build, plus a job that applies migrations to a fresh Postgres and **fails on schema drift**. Deploy workflow uses Workload Identity Federation — no GCP key in the repo.
 - [x] **Test Suite Expansion**: 23 → 68 offline tests, covering config validation and redaction, queue persistence/restart-replay behaviour, health stall detection, and cross-midnight time windows.
+- [x] **Local `docker compose up -d` Fixes & Demo Accounts**:
+  - Fixed `frontend/Dockerfile`: `npm ci`'s `postinstall` runs `prisma generate`, which needs `prisma/schema.prisma`
+    present at install time — the `deps` stage was only copying `package.json`/`package-lock.json` before
+    `npm ci`, so every containerized frontend build failed. Now copies `prisma/` first.
+  - Remapped local Postgres/Redis host ports from `5433`/`6380` to `5434`/`6381` to avoid clashing with other
+    projects on the same machine.
+  - `frontend/.env`'s `NEXTAUTH_SECRET` was `"super-secret-key"`, one of `env.ts`'s hardcoded weak-placeholder
+    values — every request 500'd. Replaced with a real generated secret.
+  - Added `frontend/scripts/seed-demo-accounts.js` (`npm run seed:demo`): idempotently seeds 5 accounts across
+    the setup funnel (no phone/no route → route-no-phone → paused → active → multi-route power user) for
+    manual QA and demos, reusing an existing real polyline so the "active" ones match
+    `backend/fixtures/torrance_hb_405_test.kml` without a live routing-API call.
 
 ---
 
@@ -98,8 +117,8 @@ Key capabilities:
 - *Next Step*: The public demo servers still have no SLA. Stand up the `osrm` service already scaffolded in `docker-compose.yml` (needs a pre-processed California OSM extract), or rely on the Google Directions key.
 
 ### 3. Observability
-- *Current State*: `/healthz` reports a stalled loop; logs are plain `print()` to stdout.
-- *Next Step*: Add a Cloud Monitoring uptime check against `/healthz` with an alerting policy, and move the worker to structured (JSON) logging so Cloud Logging can index fields like subscription id and incident number.
+- *Current State*: A failed pass surfaces only as a non-zero process exit in Cloud Run's execution history; logs are plain `print()` to stdout.
+- *Next Step*: Add a Cloud Monitoring alert policy on the Cloud Run Job's execution-failure metric, and move the worker to structured (JSON) logging so Cloud Logging can index fields like subscription id and incident number.
 
 ### 4. Twilio Go-Live
 - *Current State*: Dispatch is implemented and inert — unset/placeholder credentials console-log instead of sending. Deliberately deferred until the deployment is settled.

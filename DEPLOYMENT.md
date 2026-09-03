@@ -17,7 +17,7 @@ How this system goes to production, and why each piece is where it is.
                                  │ SQLAlchemy (pooled)
    Cloud Scheduler ─┐ ┌──────────┴─────────────┐
    (every minute)   └▶│  Cloud Run Job — worker │──▶ Twilio SMS
-   Caltrans KML ───▶ │  (backend/, RUN_ONCE)   │
+   Caltrans KML ───▶ │  (backend/, one-shot)   │
    Gemini       ───▶ └────────────┬─────────────┘
                                  │
                     ┌────────────▼─────────────┐
@@ -34,37 +34,32 @@ migrations CI job exists.
 
 ## Why the worker is a Cloud Run *Job*, not an always-on service
 
-The worker sleeps for most of every poll interval. Running it as a Cloud Run
-service means `--min-instances=1 --no-cpu-throttling` — an always-allocated
-vCPU, billed continuously, for a process that does a few seconds of real work a
-minute. Running it as a **Job** triggered by Cloud Scheduler bills only the
-seconds it actually runs, which at this workload is a rounding error by
-comparison.
+`backend/main.py` does one `check_and_notify()` pass and exits — there is no
+long-lived loop mode. Running that as a Cloud Run service would mean
+`--min-instances=1 --no-cpu-throttling` — an always-allocated vCPU, billed
+continuously, for a process that does a few seconds of real work a minute.
+Running it as a **Job** triggered by Cloud Scheduler bills only the seconds it
+actually runs, which at this workload is a rounding error by comparison.
+Locally, `scripts/run-worker-loop.sh` / `.ps1` imitate the same shape by
+looping `docker compose run --rm worker` on an interval, instead of running an
+always-on container.
 
-`RUN_ONCE=true` (`backend/config.py`) is that shape: one `check_and_notify()`
-pass, then exit. Three things make it safe:
+Three things make one-shot-per-invocation safe:
 
-- **The notification queue is Redis-backed.** The process dies between cycles,
-  so an in-memory retry queue would drop every pending alert once a minute.
-  Pending and dead-lettered tasks are restored on the next execution.
+- **The notification queue is Redis-backed.** The process exits between
+  cycles, so an in-memory retry queue would drop every pending alert once a
+  minute. Pending and dead-lettered tasks are restored on the next execution.
 - **The Gemini summary cache is in Redis too**, so exiting doesn't throw away
   the cache and re-bill the same summaries.
-- **A Redis lock prevents overlap.** Cloud Scheduler does not wait for the
-  previous execution to finish. Two concurrent runs would both match every
-  subscription and race on the `NotifiedIncident` fingerprint row — so
-  `single_run_lock()` makes a run that finds the lock held exit 0 immediately.
-  `--task-timeout` and `RUN_LOCK_TTL_SECONDS` should stay aligned (both 300s by
-  default): the timeout caps a wedged execution, the TTL stops a dead one from
-  wedging its successors.
+- **A Redis lock prevents overlap.** Cloud Scheduler (and the local loop
+  script) does not wait for the previous execution to finish. Two concurrent
+  runs would both match every subscription and race on the `NotifiedIncident`
+  fingerprint row — so `single_run_lock()` makes a run that finds the lock
+  held exit 0 immediately. `--task-timeout` and `RUN_LOCK_TTL_SECONDS` should
+  stay aligned (both 300s by default): the timeout caps a wedged execution,
+  the TTL stops a dead one from wedging its successors.
 
-The long-lived loop is still fully supported — leave `RUN_ONCE` unset and the
-worker runs `while True` and serves `/healthz` (`backend/health.py`), which
-reports **stalled** rather than merely "process alive". That's what
-`docker compose up` uses locally, and what you'd deploy to a VM or to Render's
-Background Worker. Under `RUN_ONCE` the health server is skipped: nothing probes
-a task that lives for seconds, and a non-zero exit is the failure signal instead.
-
-Either way, one worker at a time. Horizontal scale-out needs the distributed
+One worker execution at a time. Horizontal scale-out needs the distributed
 queue described in `HANDOFF.md` first.
 
 ---
@@ -222,7 +217,7 @@ gcloud run jobs deploy incident-alerts-worker \
   --source ./backend --region "$REGION" \
   --cpu=1 --memory=512Mi \
   --task-timeout=300s --max-retries=0 \
-  --set-env-vars=ENVIRONMENT=production,RUN_ONCE=true,RUN_LOCK_TTL_SECONDS=300 \
+  --set-env-vars=ENVIRONMENT=production,RUN_LOCK_TTL_SECONDS=300 \
   --set-secrets=DATABASE_URL=incident-alerts-database-url:latest,PHONE_ENCRYPTION_KEY=incident-alerts-phone-key:latest,REDIS_URL=incident-alerts-redis-url:latest
 ```
 
@@ -281,14 +276,6 @@ still running — skipping this execution.` is also a success: it means the run
 lock did its job, and a *sustained* run of those means cycles are taking longer
 than the schedule interval.
 
-### If you'd rather run it long-lived
-
-The `while True` loop is still supported and is what `docker compose` runs
-locally. On a VM, or on a platform with a first-class background-worker type
-(Render, Fly), leave `RUN_ONCE` unset, expose `PORT`, and point the platform's
-health check at `/healthz` — it returns 503 once the loop misses three poll
-intervals, which a bare process check would never catch.
-
 ---
 
 ## 5. Twilio (when you're ready)
@@ -329,5 +316,6 @@ Tracked in `HANDOFF.md`; the ones that matter most at deploy time:
   rate-limited and SLA-free. The `RouteCache` table plus the 1 req/s throttle
   keep normal usage well inside their limits, but a self-hosted OSRM (or a
   Google Maps key) is the real answer for production traffic.
-- **No alerting on the worker itself.** `/healthz` reports a stalled loop, but
-  nothing pages anyone. Add a Cloud Monitoring uptime check against it.
+- **No alerting on the worker itself.** A failed execution surfaces only as a
+  non-zero exit in Cloud Run's execution history — nothing pages anyone. Add a
+  Cloud Monitoring alert policy on the Job's execution-failure metric.

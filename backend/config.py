@@ -51,9 +51,9 @@ class Settings(BaseSettings):
     phone_encryption_key: str = Field(alias="PHONE_ENCRYPTION_KEY")
 
     # --- Database pooling ----------------------------------------------------
-    # Sized for a single worker process against a small managed Postgres. The
-    # worker is one loop, so the pool only needs to cover the sessions opened
-    # per iteration plus headroom for pre-ping reconnects.
+    # Sized for a single worker process against a small managed Postgres — one
+    # process, one pass, so the pool only needs to cover the sessions opened
+    # per pass plus headroom for pre-ping reconnects.
     db_pool_size: int = Field(default=5, alias="DB_POOL_SIZE")
     db_max_overflow: int = Field(default=5, alias="DB_MAX_OVERFLOW")
     db_pool_timeout: int = Field(default=30, alias="DB_POOL_TIMEOUT")
@@ -70,23 +70,14 @@ class Settings(BaseSettings):
     redis_port: int = Field(default=6379, alias="REDIS_PORT")
     redis_db: int = Field(default=0, alias="REDIS_DB")
 
-    # --- Worker loop ---------------------------------------------------------
-    poll_interval_seconds: int = Field(default=60, alias="POLL_INTERVAL_SECONDS")
-    # When true the worker runs a single check_and_notify() pass and exits —
-    # the shape a Cloud Run Job / cron invocation wants. Default (false) is the
-    # long-lived loop used by a plain container host or a VM.
-    run_once: bool = Field(default=False, alias="RUN_ONCE")
+    # --- Worker execution ----------------------------------------------------
+    # The worker always runs a single check_and_notify() pass and exits — the
+    # shape a Cloud Run Job / cron invocation (or a local scheduled loop) wants.
     # TTL on the Redis lock that stops two scheduled executions overlapping.
     # Must exceed the worst-case run time (otherwise a slow run's lock expires
     # and the next execution starts anyway) and stay under the point where
-    # skipping cycles matters. Only consulted in run-once mode.
+    # skipping cycles matters.
     run_lock_ttl_seconds: int = Field(default=300, alias="RUN_LOCK_TTL_SECONDS")
-    # Long-lived mode only (a VM, docker compose, or a background-worker host):
-    # the platform expects something listening on $PORT to probe. The worker has
-    # no real HTTP API, so it serves a liveness endpoint on this port only.
-    # Skipped entirely under run_once, where nothing probes a short-lived task.
-    health_port: int = Field(default=8080, alias="PORT")
-    health_server_enabled: bool = Field(default=True, alias="HEALTH_SERVER_ENABLED")
 
     # --- Route matching ------------------------------------------------------
     match_radius_miles: float = Field(default=5.0, alias="MATCH_RADIUS_MILES")
@@ -122,13 +113,6 @@ class Settings(BaseSettings):
                 f"DATABASE_URL has unsupported scheme '{parsed.scheme}'. "
                 "Expected a postgresql:// connection string."
             )
-        return v
-
-    @field_validator("poll_interval_seconds")
-    @classmethod
-    def _validate_interval(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("POLL_INTERVAL_SECONDS must be >= 1")
         return v
 
     @model_validator(mode="after")
@@ -192,8 +176,6 @@ class Settings(BaseSettings):
                 f"  database         : {db_display}",
                 f"  db pool          : size={self.db_pool_size} overflow={self.db_max_overflow} recycle={self.db_pool_recycle}s",
                 f"  redis            : {redis_display}",
-                f"  poll interval    : {self.poll_interval_seconds}s"
-                + (" (run-once mode)" if self.run_once else ""),
                 f"  match radius     : {self.match_radius_miles} miles",
                 f"  caltrans feed    : {self.caltrans_feed_url or 'default (quickmap.dot.ca.gov)'}",
                 f"  gemini summaries : {'enabled' if self.gemini_enabled else 'disabled (mock summaries)'}",

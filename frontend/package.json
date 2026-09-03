@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "postinstall": "prisma generate",
     "db:migrate": "prisma migrate deploy",
+    "seed:demo": "node scripts/seed-demo-accounts.js",
     "vercel-build": "prisma generate && prisma migrate deploy && next build"
   },
   "dependencies": {

@@ -15,14 +15,9 @@ COPY . .
 RUN useradd --create-home --uid 1001 worker && chown -R worker:worker /app
 USER worker
 
-ENV PYTHONUNBUFFERED=1 \
-    PORT=8080
+ENV PYTHONUNBUFFERED=1
 
-# The worker has no HTTP API; this port serves only the liveness endpoint that
-# Cloud Run (and any orchestrator's probes) require. See backend/health.py.
-EXPOSE 8080
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status == 200 else 1)"
-
+# One check_and_notify() pass, then exit. No HTTP API and no port to expose —
+# a Cloud Run Job (or a local scheduled loop) invokes this container per cycle
+# and reads its exit code, rather than probing a liveness endpoint.
 CMD ["uv", "run", "python", "main.py"]

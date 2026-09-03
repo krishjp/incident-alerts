@@ -33,7 +33,6 @@ class TestRequiredConfig:
     def test_valid_config_loads(self):
         settings = build()
         assert settings.database_url == VALID_DB
-        assert settings.poll_interval_seconds == 60
 
     def test_missing_database_url_is_rejected(self, monkeypatch):
         monkeypatch.delenv("DATABASE_URL", raising=False)
@@ -54,10 +53,6 @@ class TestRequiredConfig:
     def test_unsupported_database_scheme_is_rejected(self):
         with pytest.raises(ValidationError):
             build(DATABASE_URL="mysql://user:pass@host/db")
-
-    def test_zero_poll_interval_is_rejected(self):
-        with pytest.raises(ValidationError):
-            build(POLL_INTERVAL_SECONDS=0)
 
 
 class TestProductionHardening:

@@ -1,7 +1,5 @@
-import time
 from google import genai
 from config import settings
-from health import mark_cycle_complete, start_health_server
 from redis_client import single_run_lock
 from route_utils import is_within_range_pure as is_within_range
 
@@ -49,7 +47,6 @@ def check_and_notify():
         print("No active subscriptions for the current time window.")
         # Process any pending retries in the notification queue
         global_notification_queue.process_queue()
-        mark_cycle_complete()
         return
 
     # The Caltrans feed is one statewide snapshot per HTTP call; fetch_caltrans_incidents(area)
@@ -150,7 +147,6 @@ def check_and_notify():
 
     # Process all queued notifications (with retries and DLQ dispatch)
     global_notification_queue.process_queue()
-    mark_cycle_complete()
 
 def main():
     # Importing config already validated every required/typed setting; this
@@ -158,34 +154,17 @@ def main():
     print("Starting Incident Notification Worker...")
     print(settings.describe())
 
-    if settings.run_once:
-        # RUN_ONCE=true is the Cloud Run Job / cron shape: one pass, then exit.
-        # Undelivered retries survive via the Redis-backed notification queue.
-        #
-        # No health server here — nothing probes a task that lives for seconds,
-        # and the scheduler treats a non-zero exit as the failure signal instead.
-        with single_run_lock("worker:poll", ttl_seconds=settings.run_lock_ttl_seconds) as acquired:
-            if not acquired:
-                # The previous execution is still running. Exiting 0 (not an
-                # error) keeps the scheduler's failure alerting meaningful.
-                print("Previous poll cycle still running - skipping this execution.")
-                return
-            check_and_notify()
-        return
-
-    # Long-lived mode: container platforms expect the process to answer on $PORT.
-    # The worker has no HTTP API, so this serves liveness/readiness only.
-    if settings.health_server_enabled:
-        start_health_server(settings.health_port, settings.poll_interval_seconds)
-
-    while True:
-        try:
-            check_and_notify()
-        except Exception as e:
-            print(f"Worker error: {e}")
-
-        print(f"Sleeping for {settings.poll_interval_seconds} seconds...")
-        time.sleep(settings.poll_interval_seconds)
+    # One check_and_notify() pass, then exit — the Cloud Run Job / cron shape.
+    # Undelivered retries survive via the Redis-backed notification queue, so
+    # nothing is lost between invocations.
+    with single_run_lock("worker:poll", ttl_seconds=settings.run_lock_ttl_seconds) as acquired:
+        if not acquired:
+            # A previous execution is still running (the scheduler that invokes
+            # this process does not wait for the prior run to finish). Exiting 0
+            # (not an error) keeps the scheduler's failure alerting meaningful.
+            print("Previous poll cycle still running - skipping this execution.")
+            return
+        check_and_notify()
 
 
 if __name__ == "__main__":

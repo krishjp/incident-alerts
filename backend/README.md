@@ -22,14 +22,13 @@ A Python-based automation worker that ingests live incident data feeds from **Ca
 * **`caltrans_client.py`**: The core API handler fetching and parsing Caltrans QuickMap KML feeds into structured incident records.
 * **`notification_queue.py`**: Asynchronous notification queue for SMS alert delivery with exponential retry backoff and Dead Letter Queue (DLQ). Pending/DLQ tasks are mirrored to Redis so they survive a restart.
 * **`redis_client.py`**: Shared Redis connection factory (supports a managed `REDIS_URL`); every caller must tolerate `None`.
-* **`health.py`**: `/healthz` liveness endpoint served on `$PORT` from a daemon thread; reports 503 when the poll loop stalls.
 * **`scrapper.py`**: Deprecated legacy wrapper module forwarding calls to `caltrans_client.py`.
 * **`route_generator.py`**: Interacts with Nominatim OpenStreetMap geocoding and OSRM routing APIs to build driving polylines.
 * **`route_utils.py`**: Handles polyline decoding, bounding box pre-filtering, and geodesic distance evaluation.
-* **`main.py`**: Background worker loop checking active PostgreSQL subscriptions, processing feeds, and managing notification queues.
+* **`main.py`**: Single-pass worker entrypoint — checks active PostgreSQL subscriptions, processes feeds, and manages notification queues, then exits.
 * **`models.py`**: Defines SQLAlchemy models (`User`, `RouteSubscription`, `NotifiedIncident`) aligned with Prisma schema tables.
 * **`fixtures/injected_incidents.kml`**: Editable sample KML feed for local testing — see [Local Testing with Injected Incidents](#-local-testing-with-injected-incidents) below.
-* **`tests/`**: Pytest test suite covering API feeds, notification queue retries/DLQ/durability, route matching, config validation, time windows, and health stall detection (`68 passed` offline).
+* **`tests/`**: Pytest test suite covering API feeds, notification queue retries/DLQ/durability, route matching, config validation, and time windows.
 
 ---
 
@@ -43,9 +42,8 @@ A Python-based automation worker that ingests live incident data feeds from **Ca
 
 2. **Run Backend Worker**:
    ```bash
-   uv run python main.py                  # long-lived polling loop
-   RUN_ONCE=true uv run python main.py     # single pass, then exit
-   curl http://localhost:8080/healthz      # liveness (503 once the loop stalls)
+   uv run python main.py                  # single pass, then exit — no long-lived loop mode
+   ../scripts/run-worker-loop.sh          # repeats that on an interval (imitates Cloud Scheduler)
    ```
    Startup prints a credential-redacted config summary and aborts on invalid configuration.
 
@@ -95,11 +93,11 @@ notification queue) end-to-end without hitting the live Caltrans feed.
    ```bash
    uv run python main.py
    ```
-   It polls every 60s. On a match you should see `*** Match found for ...` in stdout, followed by a
+   It does one pass and exits. On a match you should see `*** Match found for ...` in stdout, followed by a
    summarized alert; without real Twilio credentials, dispatch falls back to console-logging the SMS instead
    of sending one.
 4. To exercise the dedup/update/resolved paths, edit `backend/fixtures/injected_incidents.kml` between runs
-   and re-run the worker (or wait out its 60s loop):
+   and re-run the worker:
    - **Unchanged incident** → no re-alert. A fingerprint of the incident's `details` is stored in
      `NotifiedIncident.state`; a re-run with identical content is a no-op.
    - **Changed incident** (edit the `iw-title`/`iw-text`/timestamp text on an existing `<Placemark>`) → one
