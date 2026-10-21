@@ -1,12 +1,8 @@
-import os
 import hashlib
-import json
-from typing import Optional, Any
+from typing import Optional
 
-try:
-    import redis
-except ImportError:
-    redis = None
+from config import settings
+from redis_client import get_redis_client
 
 class IncidentCache:
     """
@@ -15,37 +11,15 @@ class IncidentCache:
     Falls back transparently to an in-memory dictionary if Redis is offline/unreachable.
     """
 
-    def __init__(self, redis_host: Optional[str] = None, redis_port: int = 6379, redis_db: int = 0, default_ttl: int = 86400):
-        self.redis_host = redis_host or os.getenv("REDIS_HOST", "localhost")
-        self.redis_port = int(os.getenv("REDIS_PORT", redis_port))
-        self.redis_db = int(os.getenv("REDIS_DB", redis_db))
+    def __init__(self, default_ttl: int = 86400, client: Optional[object] = None):
+        self.redis_host = settings.redis_host
+        self.redis_port = settings.redis_port
+        self.redis_db = settings.redis_db
         self.default_ttl = default_ttl
-        self.redis_client = None
+        # Connection details (including a managed provider's REDIS_URL) and the
+        # connect-once-and-remember behaviour live in redis_client.
+        self.redis_client = client if client is not None else get_redis_client()
         self._memory_cache = {}
-
-        self._connect()
-
-    def _connect(self):
-        """Attempts to establish connection to Redis server."""
-        if redis is None:
-            print("[Cache Warning] redis python package not installed. Using in-memory fallback.")
-            return
-
-        try:
-            client = redis.Redis(
-                host=self.redis_host,
-                port=self.redis_port,
-                db=self.redis_db,
-                socket_timeout=1.0,
-                decode_responses=True
-            )
-            # Ping Redis server to confirm connection
-            if client.ping():
-                self.redis_client = client
-                print(f"[Cache Info] Connected to Redis at {self.redis_host}:{self.redis_port}")
-        except Exception:
-            # Fall back silently to in-memory cache if Redis is not running locally
-            self.redis_client = None
 
     def _generate_cache_key(self, incident_number: str, raw_details: str) -> str:
         """Generates a deterministic Redis key based on incident ID and details hash."""

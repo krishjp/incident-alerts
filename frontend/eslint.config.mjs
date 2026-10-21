@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Standalone CommonJS scripts run directly via `node`, not part of the
+    // Next.js app — TS/ESM app lint rules (e.g. no-require-imports) don't apply.
+    "scripts/**",
   ]),
 ]);
 

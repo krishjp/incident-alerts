@@ -4,7 +4,7 @@ import { useState } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { AlertCircle, ArrowRight, Chrome } from "lucide-react";
+import { AlertCircle, Chrome } from "lucide-react";
 
 export default function Login() {
     const router = useRouter();

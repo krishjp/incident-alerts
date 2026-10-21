@@ -1,10 +1,12 @@
-import os
+import json
 import time
 import uuid
-import warnings
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Dict, Optional, Callable, Any
+
+from config import settings
+from redis_client import get_redis_client
 
 class TaskStatus(str, Enum):
     PENDING = "PENDING"
@@ -35,6 +37,7 @@ class NotificationTask:
             "message": self.message,
             "max_retries": self.max_retries,
             "attempts": self.attempts,
+            "backoff_factor": self.backoff_factor,
             "status": self.status.value,
             "last_error": self.last_error,
             "created_at": self.created_at,
@@ -42,22 +45,100 @@ class NotificationTask:
             "next_attempt_at": self.next_attempt_at,
         }
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "NotificationTask":
+        """Rebuilds a task persisted by to_dict (see TaskStore)."""
+        return cls(
+            task_id=data["task_id"],
+            to_phone=data.get("to_phone", ""),
+            message=data.get("message", ""),
+            max_retries=data.get("max_retries", 3),
+            attempts=data.get("attempts", 0),
+            backoff_factor=data.get("backoff_factor", 1.0),
+            status=TaskStatus(data.get("status", TaskStatus.PENDING.value)),
+            last_error=data.get("last_error"),
+            created_at=data.get("created_at", time.time()),
+            updated_at=data.get("updated_at", time.time()),
+            next_attempt_at=data.get("next_attempt_at", time.time()),
+        )
+
+
+class TaskStore:
+    """
+    Redis-backed durability layer for the notification queue.
+
+    Without it, an alert that is enqueued but not yet delivered (waiting out an
+    exponential-backoff window, or sitting in the DLQ) is lost when the worker
+    restarts — which in a deployed environment happens on every redeploy,
+    scale-to-zero, and instance replacement. Pending and DLQ tasks are mirrored
+    into two Redis hashes so a restarted worker resumes exactly where it left off.
+
+    Degrades to a no-op when Redis is unreachable: the queue still works, it
+    just loses the cross-restart guarantee.
+    """
+
+    PENDING_KEY = "notifications:pending"
+    DLQ_KEY = "notifications:dlq"
+
+    def __init__(self, client=None):
+        self.client = client if client is not None else get_redis_client()
+
+    @property
+    def enabled(self) -> bool:
+        return self.client is not None
+
+    def save(self, task: NotificationTask, dlq: bool = False) -> None:
+        if not self.enabled:
+            return
+        try:
+            self.client.hset(
+                self.DLQ_KEY if dlq else self.PENDING_KEY,
+                task.task_id,
+                json.dumps(task.to_dict()),
+            )
+        except Exception as exc:
+            print(f"[Queue Persist Error] Could not save task {task.task_id[:8]}: {exc}")
+
+    def remove(self, task_id: str, dlq: bool = False) -> None:
+        if not self.enabled:
+            return
+        try:
+            self.client.hdel(self.DLQ_KEY if dlq else self.PENDING_KEY, task_id)
+        except Exception as exc:
+            print(f"[Queue Persist Error] Could not remove task {task_id[:8]}: {exc}")
+
+    def load(self, dlq: bool = False) -> List[NotificationTask]:
+        if not self.enabled:
+            return []
+        try:
+            raw = self.client.hgetall(self.DLQ_KEY if dlq else self.PENDING_KEY)
+        except Exception as exc:
+            print(f"[Queue Persist Error] Could not load persisted tasks: {exc}")
+            return []
+
+        tasks = []
+        for task_id, payload in raw.items():
+            try:
+                tasks.append(NotificationTask.from_dict(json.loads(payload)))
+            except Exception as exc:
+                print(f"[Queue Persist Error] Dropping unreadable task {task_id}: {exc}")
+                self.remove(task_id, dlq=dlq)
+        return tasks
+
 def default_twilio_sender(to_phone: str, message: str) -> bool:
     """
     Default Twilio SMS dispatch function.
     Sends a real SMS via the Twilio REST API when TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN
     are configured with non-placeholder values; otherwise falls back to mock console logging.
     """
-    twilio_phone = os.getenv("TWILIO_PHONE_NUMBER", "+15550000000")
-    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
-    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+    twilio_phone = settings.twilio_phone_number
 
-    if account_sid and auth_token and account_sid != "dummy_sid" and auth_token != "dummy_token":
+    if settings.sms_enabled:
         from twilio.rest import Client
         from twilio.base.exceptions import TwilioRestException
 
         try:
-            client = Client(account_sid, auth_token)
+            client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
             client.messages.create(body=message, from_=twilio_phone, to=to_phone)
             return True
         except TwilioRestException as e:
@@ -76,11 +157,40 @@ class NotificationQueue:
     to handle transient network failures or undeliverable alerts.
     """
 
-    def __init__(self, sender_func: Optional[Callable[[str, str], bool]] = None):
+    def __init__(
+        self,
+        sender_func: Optional[Callable[[str, str], bool]] = None,
+        persist: bool = False,
+        store: Optional[TaskStore] = None,
+    ):
+        """
+        persist=True mirrors pending/DLQ tasks to Redis and restores them at
+        construction, so undelivered alerts survive a worker restart. It is
+        opt-in (the deployed singleton below sets it) so that tests and ad-hoc
+        instances never pick up state from a developer's local Redis.
+        """
         self.sender_func = sender_func or default_twilio_sender
         self.pending_tasks: List[NotificationTask] = []
         self.completed_tasks: List[NotificationTask] = []
         self.dlq_tasks: List[NotificationTask] = []
+        self.store = store if store is not None else (TaskStore() if persist else None)
+
+        if self.store and self.store.enabled:
+            self.pending_tasks = self.store.load()
+            self.dlq_tasks = self.store.load(dlq=True)
+            if self.pending_tasks or self.dlq_tasks:
+                print(
+                    f"[Queue Restored] {len(self.pending_tasks)} pending and "
+                    f"{len(self.dlq_tasks)} DLQ task(s) recovered from Redis."
+                )
+
+    def _persist(self, task: NotificationTask, dlq: bool = False) -> None:
+        if self.store:
+            self.store.save(task, dlq=dlq)
+
+    def _forget(self, task_id: str, dlq: bool = False) -> None:
+        if self.store:
+            self.store.remove(task_id, dlq=dlq)
 
     def enqueue(self, to_phone: str, message: str, max_retries: int = 3, backoff_factor: float = 1.0) -> NotificationTask:
         """Enqueues a new SMS alert task."""
@@ -93,6 +203,7 @@ class NotificationQueue:
             next_attempt_at=time.time()
         )
         self.pending_tasks.append(task)
+        self._persist(task)
         print(f"[Queue Enqueued] Task {task.task_id[:8]} for {to_phone}")
         return task
 
@@ -123,6 +234,7 @@ class NotificationQueue:
                     task.status = TaskStatus.SUCCESS
                     task.updated_at = current_time
                     self.completed_tasks.append(task)
+                    self._forget(task.task_id)
                     stats["succeeded"] += 1
                     print(f"[Queue Success] Task {task.task_id[:8]} delivered on attempt {task.attempts}.")
                 else:
@@ -138,12 +250,15 @@ class NotificationQueue:
                     task.status = TaskStatus.FAILED
                     task.next_attempt_at = current_time + delay
                     remaining_pending.append(task)
+                    self._persist(task)
                     stats["retried"] += 1
                     print(f"[Queue Retry] Task {task.task_id[:8]} scheduled to retry in {delay:.2f}s.")
                 else:
                     # Max retries exhausted -> Move to Dead Letter Queue (DLQ)
                     task.status = TaskStatus.DLQ
                     self.dlq_tasks.append(task)
+                    self._forget(task.task_id)
+                    self._persist(task, dlq=True)
                     stats["dlq"] += 1
                     print(f"[Queue DLQ] Task {task.task_id[:8]} moved to Dead Letter Queue after {task.attempts} attempts.")
 
@@ -167,6 +282,8 @@ class NotificationQueue:
                 # Move back to pending queue
                 self.dlq_tasks.pop(i)
                 self.pending_tasks.append(task)
+                self._forget(task_id, dlq=True)
+                self._persist(task)
                 print(f"[Queue Re-queued] Task {task_id[:8]} restored from DLQ to pending queue.")
                 return True
         return False
@@ -174,9 +291,12 @@ class NotificationQueue:
     def clear_dlq(self) -> int:
         """Clears all tasks in the Dead Letter Queue."""
         count = len(self.dlq_tasks)
+        for task in self.dlq_tasks:
+            self._forget(task.task_id, dlq=True)
         self.dlq_tasks.clear()
         return count
 
 
-# Global singleton queue instance for background worker application
-global_notification_queue = NotificationQueue()
+# Global singleton queue instance for the background worker. persist=True so an
+# alert enqueued just before a redeploy is still delivered after it.
+global_notification_queue = NotificationQueue(persist=True)
