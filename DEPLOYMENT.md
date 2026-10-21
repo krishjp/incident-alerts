@@ -149,7 +149,7 @@ which concurrent serverless instances bypass trivially.
    | `DATABASE_URL` | pooled endpoint |
    | `DIRECT_URL` | direct endpoint, for migrations — **leave unset** with the Neon integration (derived from `DATABASE_URL_UNPOOLED`; see section 1) |
    | `NEXTAUTH_SECRET` | `openssl rand -hex 32` |
-   | `NEXTAUTH_URL` | exact deployed origin, e.g. `https://incident-alerts.vercel.app` |
+   | `NEXTAUTH_URL` | not needed on Vercel — next-auth uses the request's own host there, so previews work on any URL. Required on other hosts. |
    | `PHONE_ENCRYPTION_KEY` | `openssl rand -hex 32` — **must equal the worker's** |
    | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | optional, for Google login |
    | `GOOGLE_MAPS_API_KEY` | optional; falls back to Nominatim/OSRM |

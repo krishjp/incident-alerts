@@ -1,12 +1,16 @@
 // Fails fast on missing/weak required configuration instead of letting bad
 // config surface later as a confusing runtime error (e.g. a decrypt failure
 // deep in an API route, or silent auth cookie issues from a weak secret).
+// NEXTAUTH_URL is only required off Vercel: on Vercel (VERCEL=1), next-auth v4
+// derives its origin from the request's forwarded host and ignores
+// NEXTAUTH_URL, so requiring it there just forces every preview URL to be
+// configured by hand.
 const REQUIRED_KEYS = [
     "DATABASE_URL",
     "NEXTAUTH_SECRET",
-    "NEXTAUTH_URL",
+    ...(process.env.VERCEL ? [] : ["NEXTAUTH_URL"]),
     "PHONE_ENCRYPTION_KEY",
-] as const;
+];
 
 const KNOWN_WEAK_SECRETS = new Set([
     "super-secret-key",
