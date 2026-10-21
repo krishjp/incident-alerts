@@ -147,7 +147,7 @@ which concurrent serverless instances bypass trivially.
    | `PHONE_ENCRYPTION_KEY` | `openssl rand -hex 32` — **must equal the worker's** |
    | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | optional, for Google login |
    | `GOOGLE_MAPS_API_KEY` | optional; falls back to Nominatim/OSRM |
-   | `UPSTASH_REDIS_REST_URL` / `_TOKEN` | rate limiting |
+   | `UPSTASH_REDIS_REST_URL` / `_TOKEN` | rate limiting; `KV_REST_API_URL` / `KV_REST_API_TOKEN` (what Vercel's Upstash integration injects) are accepted too |
    | `OSRM_URL` / `NOMINATIM_URL` | only if self-hosting the routing stack |
 
 3. If you use Google login, add `https://<domain>/api/auth/callback/google` to
@@ -196,6 +196,24 @@ done
 printf '%s' "<value>" | gcloud secrets versions add incident-alerts-database-url --data-file=-
 ```
 
+**Every one of the seven needs at least one version**, even for a service you
+aren't using yet: the deploy references each as `:latest`, and a secret with no
+versions fails the deploy. If Twilio (or Gemini) isn't set up yet, store the
+placeholders `backend/config.py` already recognizes as unconfigured — the worker
+then console-logs alerts instead of sending them (and skips Gemini summaries):
+
+```bash
+printf '%s' "dummy_sid"    | gcloud secrets versions add incident-alerts-twilio-sid    --data-file=-
+printf '%s' "dummy_token"  | gcloud secrets versions add incident-alerts-twilio-token  --data-file=-
+printf '%s' "+15550000000" | gcloud secrets versions add incident-alerts-twilio-number --data-file=-
+printf '%s' "dummy_gemini" | gcloud secrets versions add incident-alerts-gemini-key    --data-file=-
+```
+
+Use these exact values: the production config check rejects a real-looking
+`TWILIO_AUTH_TOKEN` paired with a placeholder `TWILIO_ACCOUNT_SID`, so set both
+Twilio credentials to placeholders or both to real values. Going live later is
+just adding a new version with the real value (see section 5).
+
 Grant the Cloud Run runtime service account `roles/secretmanager.secretAccessor`
 (and `roles/cloudsql.client` if you're on Cloud SQL).
 
@@ -218,8 +236,11 @@ gcloud run jobs deploy incident-alerts-worker \
   --cpu=1 --memory=512Mi \
   --task-timeout=300s --max-retries=0 \
   --set-env-vars=ENVIRONMENT=production,RUN_LOCK_TTL_SECONDS=300 \
-  --set-secrets=DATABASE_URL=incident-alerts-database-url:latest,PHONE_ENCRYPTION_KEY=incident-alerts-phone-key:latest,REDIS_URL=incident-alerts-redis-url:latest
+  --set-secrets=DATABASE_URL=incident-alerts-database-url:latest,PHONE_ENCRYPTION_KEY=incident-alerts-phone-key:latest,REDIS_URL=incident-alerts-redis-url:latest,GEMINI_API_KEY=incident-alerts-gemini-key:latest,TWILIO_ACCOUNT_SID=incident-alerts-twilio-sid:latest,TWILIO_AUTH_TOKEN=incident-alerts-twilio-token:latest,TWILIO_PHONE_NUMBER=incident-alerts-twilio-number:latest
 ```
+
+This matches the secret set `deploy-worker.yml` passes; leaving any out deploys
+a worker that silently skips Gemini summaries or SMS.
 
 `ENVIRONMENT=production` is not cosmetic: it activates the extra checks in
 `backend/config.py` that refuse to start on default `postgres/postgres`
@@ -300,10 +321,14 @@ land in the queue's Dead Letter Queue rather than reaching users.
 - **Worker** — redeploy a previous image tag (they're tagged by commit SHA):
 
   ```bash
-  gcloud run deploy incident-alerts-worker \
+  gcloud run jobs deploy incident-alerts-worker \
     --image "$REGION-docker.pkg.dev/$PROJECT/incident-alerts/worker:<sha>" \
     --region "$REGION"
   ```
+
+  Use `run jobs deploy`, not `run deploy` — the latter creates a separate
+  Cloud Run *service* and leaves the scheduled Job untouched. Flags and secrets
+  not passed here are kept from the Job's current configuration.
 
 ## Known gaps before this carries real users
 

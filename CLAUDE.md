@@ -124,7 +124,7 @@ user delete another account's route by id.
 
 ### Rate limiting
 `frontend/src/lib/rate-limit.ts` fronts subscription creation, registration, and credentials login. It uses
-Upstash Redis over REST when `UPSTASH_REDIS_REST_URL`/`_TOKEN` are set and per-instance in-memory counters
+Upstash Redis over REST when `UPSTASH_REDIS_REST_URL`/`_TOKEN` (or Vercel's `KV_REST_API_URL`/`_TOKEN`) are set and per-instance in-memory counters
 otherwise, and **fails open** on limiter errors. The in-memory fallback is per serverless instance, so
 production deploys should configure Upstash.
 

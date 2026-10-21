@@ -8,16 +8,18 @@
  * account-enumeration and bulk-signup attempts.
  *
  * Two backends:
- *   - Upstash Redis over its REST API when UPSTASH_REDIS_REST_URL/TOKEN are set.
- *     This is the correct choice for a deployment on Vercel, where each
- *     serverless instance is a separate process and in-memory counters are
- *     per-instance (and therefore trivially bypassed by concurrency).
+ *   - Upstash Redis over its REST API when UPSTASH_REDIS_REST_URL/TOKEN are set
+ *     (or KV_REST_API_URL/TOKEN, the names Vercel's Upstash Marketplace
+ *     integration injects). This is the correct choice for a deployment on
+ *     Vercel, where each serverless instance is a separate process and
+ *     in-memory counters are per-instance (and therefore trivially bypassed by
+ *     concurrency).
  *   - An in-memory fixed-window counter otherwise, so local development and
  *     single-instance deploys still get basic protection with no extra infra.
  */
 
-const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
-const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
 
 export const rateLimitBackend: "upstash" | "memory" =
     UPSTASH_URL && UPSTASH_TOKEN ? "upstash" : "memory";
