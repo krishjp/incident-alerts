@@ -85,6 +85,7 @@ jobs:
             --image "$IMAGE:${{ github.sha }}" \
             --project "${{ vars.GCP_PROJECT_ID }}" \
             --region "${{ vars.GCP_REGION }}" \
+            --service-account "incident-alerts-worker@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com" \
             --cpu=1 \
             --memory=512Mi \
             --task-timeout=300s \

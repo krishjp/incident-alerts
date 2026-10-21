@@ -81,11 +81,16 @@ Whichever you pick, you need **two connection strings**:
 Migrations run DDL and take advisory locks, which transaction-mode poolers
 (PgBouncer, Neon's `-pooler` host, Supabase's port 6543) cannot carry.
 
-Append connection caps to the runtime URL:
+Append connection caps to the **frontend's** runtime URL:
 
 ```
 postgresql://user:pass@host/incidentsdb?sslmode=require&connection_limit=5&pool_timeout=20
 ```
+
+`connection_limit` and `pool_timeout` are Prisma-only parameters — the worker
+connects through psycopg2/libpq, which rejects unknown options (`invalid
+connection option "connection_limit"`). Give the worker the plain pooled URL
+(`...?sslmode=require`) and size its pool with `DB_POOL_SIZE`/`DB_MAX_OVERFLOW`.
 
 **Budget your connections.** Every Vercel serverless instance opens its own
 Prisma pool, and the worker opens `DB_POOL_SIZE + DB_MAX_OVERFLOW` (default 10)
@@ -220,8 +225,18 @@ Use these exact values: the production config check rejects a real-looking
 Twilio credentials to placeholders or both to real values. Going live later is
 just adding a new version with the real value (see section 5).
 
-Grant the Cloud Run runtime service account `roles/secretmanager.secretAccessor`
-(and `roles/cloudsql.client` if you're on Cloud SQL).
+The Job runs as a dedicated `incident-alerts-worker` service account rather
+than the default compute SA (which usually holds project-wide Editor). Grant it
+`roles/secretmanager.secretAccessor` on each of the seven secrets (and
+`roles/cloudsql.client` if you're on Cloud SQL):
+
+```bash
+gcloud iam service-accounts create incident-alerts-worker
+WORKER_SA="incident-alerts-worker@$PROJECT.iam.gserviceaccount.com"
+# per secret:
+gcloud secrets add-iam-policy-binding incident-alerts-database-url \
+    --member="serviceAccount:$WORKER_SA" --role=roles/secretmanager.secretAccessor
+```
 
 ### Deploying the Job
 
@@ -239,6 +254,7 @@ Manual deploy, if you'd rather not wire CI up yet:
 ```bash
 gcloud run jobs deploy incident-alerts-worker \
   --source ./backend --region "$REGION" \
+  --service-account="incident-alerts-worker@$PROJECT.iam.gserviceaccount.com" \
   --cpu=1 --memory=512Mi \
   --task-timeout=300s --max-retries=0 \
   --set-env-vars=ENVIRONMENT=production,RUN_LOCK_TTL_SECONDS=300 \
@@ -347,6 +363,9 @@ Tracked in `HANDOFF.md`; the ones that matter most at deploy time:
   rate-limited and SLA-free. The `RouteCache` table plus the 1 req/s throttle
   keep normal usage well inside their limits, but a self-hosted OSRM (or a
   Google Maps key) is the real answer for production traffic.
+- **Phone numbers aren't verified.** Anyone can point alerts at a number they
+  don't own; add one-time-code verification before switching Twilio on. This
+  and the other open security items are in `HANDOFF.md` §5.
 - **No alerting on the worker itself.** A failed execution surfaces only as a
   non-zero exit in Cloud Run's execution history — nothing pages anyone. Add a
   Cloud Monitoring alert policy on the Job's execution-failure metric.

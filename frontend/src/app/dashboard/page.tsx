@@ -47,11 +47,13 @@ export default function Dashboard() {
 
     const savePhone = async () => {
         const res = await fetch("/api/user", { method: "POST", body: JSON.stringify({ phone }) });
+        const data = await res.json().catch(() => ({}));
         if (res.ok) {
+            setPhone(data.phone || "");
             setNotice("Phone number saved.");
             setTimeout(() => setNotice(null), 3000);
         } else {
-            setError("Could not save your phone number.");
+            setError(data.error || "Could not save your phone number.");
         }
     };
 

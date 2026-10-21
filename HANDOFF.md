@@ -124,6 +124,25 @@ Key capabilities:
 - *Current State*: Dispatch is implemented and inert — unset/placeholder credentials console-log instead of sending. Deliberately deferred until the deployment is settled.
 - *Next Step*: Add real credentials to Secret Manager and redeploy (no code change). Note that pay-as-you-go accounts can only text **verified** numbers until upgraded, and US A2P 10DLC registration is required for application-initiated SMS — until both are done, failures accumulate in the DLQ.
 
-### 5. Nice-to-Haves
+### 5. Security Hardening
+From a review of the API surface (2026-10-21). No cross-user data access was found: every `/api/subscriptions` and `/api/user` query is scoped to the session's user, the worker exposes no HTTP endpoint, and no secret is `NEXT_PUBLIC_`. `POST /api/user` now accepts only US numbers (normalized to E.164) and is rate-limited per account. What's left, in priority order:
+
+1. **Phone ownership is not verified** — *blocks Twilio go-live (item 4).*
+   - *Risk*: Signup needs no email verification, so throwaway accounts can register a stranger's number and add routes; once Twilio is live the worker texts it on our bill. That's harassment plus SMS-pumping fraud. The US-only check and rate limit narrow this but don't stop it.
+   - *Next Step*: Send a one-time code (e.g. Twilio Verify) when a number is saved, store a `phoneVerifiedAt` column (Prisma migration + `backend/models.py`), and have `get_active_subscriptions()` skip users without it.
+2. **Preview deployments run with production secrets** (and possibly the production database).
+   - *Risk*: Any pushed branch is deployed with read/write access to all user data; an unprotected preview URL serves it publicly.
+   - *Next Step*: Confirm Vercel → Settings → **Deployment Protection** covers previews. Longer term, enable Neon's per-preview database branches and scope preview env vars to non-production values. (`scripts/vercel-build.sh` already migrates whichever database the deployment connects to.)
+3. **Email addresses are not verified.**
+   - *Risk*: Someone can register `victim@example.com` with a password before its owner signs up. They gain no data (the account is new), but the real owner's later Google sign-in is refused with `OAuthAccountNotLinked`. `/api/auth/register` also reveals whether an email exists ("User already exists"), slowed only by the 5-per-5-minutes IP limit.
+   - *Next Step*: Email verification on credentials signup, then return a generic response for existing emails.
+4. **Rate limiting fails open.**
+   - *Current State*: Deliberate — an Upstash outage shouldn't take down login. During an outage, the per-instance in-memory fallback is the only throttle on login, signup, phone changes, and route creation.
+   - *Next Step*: Revisit if abuse appears; at minimum, alert on limiter errors so an outage is visible.
+5. **Client IP comes from `x-forwarded-for`** (`clientIdentifier()` in `src/lib/rate-limit.ts`).
+   - *Current State*: Vercel overwrites that header, so it's trustworthy there. Behind any other host or proxy it can be spoofed to dodge the signup limit.
+   - *Next Step*: Only relevant if the frontend moves off Vercel — then trust only the proxy's own header.
+
+### 6. Nice-to-Haves
 - **Local Twilio mock service**: a small Express/Flask receiver to display outbound messages locally. The console-log fallback covers most of this need today.
 - **DLQ visibility**: `retry_dlq_task()` exists but there is no operator interface for it — dead-lettered alerts are currently only visible in logs.
