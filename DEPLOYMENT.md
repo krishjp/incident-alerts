@@ -102,7 +102,13 @@ cd frontend
 DIRECT_URL="<direct connection string>" npx prisma migrate deploy
 ```
 
-`npm run vercel-build` does this automatically on every Vercel deploy.
+`npm run vercel-build` (`frontend/scripts/vercel-build.sh`) does this
+automatically on every Vercel deploy, previews included. With Vercel's Neon
+integration you don't set `DIRECT_URL` at all: the script falls back to the
+integration's `DATABASE_URL_UNPOOLED`, so each deployment migrates the database
+it actually connects to. Don't hand-set `DIRECT_URL` in Vercel — if previews get
+their own Neon branch, a fixed value would migrate production from every
+feature-branch build.
 
 > When you change `schema.prisma`, generate a migration (`npx prisma migrate dev
 > --name <what-changed>`) **and** update `backend/models.py` by hand. Nothing
@@ -141,7 +147,7 @@ which concurrent serverless instances bypass trivially.
    | Variable | Notes |
    |---|---|
    | `DATABASE_URL` | pooled endpoint |
-   | `DIRECT_URL` | direct endpoint, for migrations |
+   | `DIRECT_URL` | direct endpoint, for migrations — **leave unset** with the Neon integration (derived from `DATABASE_URL_UNPOOLED`; see section 1) |
    | `NEXTAUTH_SECRET` | `openssl rand -hex 32` |
    | `NEXTAUTH_URL` | exact deployed origin, e.g. `https://incident-alerts.vercel.app` |
    | `PHONE_ENCRYPTION_KEY` | `openssl rand -hex 32` — **must equal the worker's** |
