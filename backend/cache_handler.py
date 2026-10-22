@@ -58,6 +58,36 @@ class IncidentCache:
 
         return True
 
+    def _generate_decision_key(self, model: str, a: str, b: str) -> str:
+        # Unordered pair: the same two summaries can meet in either order (two
+        # routes queueing the same incidents differently), and should cost one
+        # model call either way.
+        first, second = sorted((a, b))
+        pair_hash = hashlib.sha256(f"{model}\0{first}\0{second}".encode("utf-8")).hexdigest()[:32]
+        return f"dedupe:decision:{pair_hash}"
+
+    def get_decision(self, model: str, a: str, b: str) -> Optional[float]:
+        """Cached same-alert probability for a pair of summaries, if any."""
+        key = self._generate_decision_key(model, a, b)
+        val = None
+        if self.redis_client:
+            try:
+                val = self.redis_client.get(key)
+            except Exception as e:
+                print(f"[Redis Get Error] {e}")
+        if val is None:
+            val = self._memory_cache.get(key)
+        return float(val) if val is not None else None
+
+    def set_decision(self, model: str, a: str, b: str, probability: float, ttl: Optional[int] = None) -> None:
+        key = self._generate_decision_key(model, a, b)
+        self._memory_cache[key] = str(probability)
+        if self.redis_client:
+            try:
+                self.redis_client.set(key, str(probability), ex=ttl if ttl is not None else self.default_ttl)
+            except Exception as e:
+                print(f"[Redis Set Error] {e}")
+
     def clear(self):
         """Clears memory fallback and flushes Redis db if connected."""
         self._memory_cache.clear()

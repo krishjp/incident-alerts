@@ -80,7 +80,21 @@ class Settings(BaseSettings):
     run_lock_ttl_seconds: int = Field(default=300, alias="RUN_LOCK_TTL_SECONDS")
 
     # --- Route matching ------------------------------------------------------
-    match_radius_miles: float = Field(default=5.0, alias="MATCH_RADIUS_MILES")
+    match_radius_miles: float = Field(default=3.0, alias="MATCH_RADIUS_MILES")
+    # Word-overlap score (0..1) at or above which a new summary is treated as a
+    # rewording of one already sent, so no SMS goes out. See alert_dedupe.py.
+    summary_similarity_threshold: float = Field(
+        default=0.85, ge=0.0, le=1.0, alias="SUMMARY_SIMILARITY_THRESHOLD"
+    )
+    # Decision model (Vercel AI Gateway /v1/evaluate) that judges whether a new
+    # summary is a rewording of one already sent. With no key, dedupe uses the
+    # word-overlap score above. A suppressed alert is the costly mistake, so the
+    # probability bar for "same alert" is set high.
+    ai_gateway_api_key: str = Field(default="", alias="AI_GATEWAY_API_KEY")
+    dedupe_model: str = Field(default="convaiinnovations/laya", alias="DEDUPE_MODEL")
+    dedupe_min_probability: float = Field(
+        default=0.85, ge=0.0, le=1.0, alias="DEDUPE_MIN_PROBABILITY"
+    )
 
     # --- External services (all optional; each degrades gracefully) ----------
     caltrans_feed_url: Optional[str] = Field(default=None, alias="CALTRANS_FEED_URL")
@@ -159,6 +173,10 @@ class Settings(BaseSettings):
         return self.gemini_api_key not in _PLACEHOLDERS
 
     @property
+    def dedupe_model_enabled(self) -> bool:
+        return self.ai_gateway_api_key not in _PLACEHOLDERS
+
+    @property
     def is_production(self) -> bool:
         return self.environment.lower() not in ("development", "dev", "test", "local")
 
@@ -179,6 +197,7 @@ class Settings(BaseSettings):
                 f"  match radius     : {self.match_radius_miles} miles",
                 f"  caltrans feed    : {self.caltrans_feed_url or 'default (quickmap.dot.ca.gov)'}",
                 f"  gemini summaries : {'enabled' if self.gemini_enabled else 'disabled (mock summaries)'}",
+                f"  alert dedupe     : {self.dedupe_model if self.dedupe_model_enabled else 'word overlap (no AI_GATEWAY_API_KEY)'}",
                 f"  sms dispatch     : {'twilio' if self.sms_enabled else 'console mock'}",
                 "----------------------------",
             ]

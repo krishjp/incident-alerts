@@ -5,10 +5,11 @@ Both the AI-summary cache (`cache_handler`) and the durable notification queue
 (`notification_queue`) talk to the same Redis instance, so connection details
 live here rather than being re-derived from the environment in each module.
 
-Every caller must tolerate `None` — Redis is a performance/durability
-optimization in this system, never a hard dependency. When it is unreachable
-the cache falls back to an in-memory dict and the notification queue falls back
-to in-process-only durability.
+`get_redis_client` returns None when Redis is unreachable. The summary cache
+tolerates that (in-memory fallback), but the worker as a whole does not: Redis
+holds the run lock and the durable notification queue, so main.py refuses to
+run — and refuses to send — unless both Redis and Postgres are reachable. See
+`DependencyUnavailable`.
 """
 
 import uuid
@@ -24,6 +25,10 @@ except ImportError:  # pragma: no cover - redis is a declared dependency
 
 _client = None
 _connect_attempted = False
+
+
+class DependencyUnavailable(RuntimeError):
+    """Redis or Postgres is unreachable, so the worker must stop without sending."""
 
 
 def get_redis_client(force_reconnect: bool = False):
@@ -102,16 +107,14 @@ def single_run_lock(name: str, ttl_seconds: int, client=_UNSET):
     own after ttl_seconds. Set the TTL above the worst-case run time and below
     the point where skipping cycles matters.
 
-    Degrades to "always acquired" when Redis is unavailable, consistent with
-    Redis being an optimization rather than a dependency everywhere else. Say so
-    in the log, because the overlap guarantee is genuinely gone in that case.
+    Fails closed: raises DependencyUnavailable when Redis is unreachable rather
+    than running without overlap protection, since an unprotected overlap is
+    exactly what double-sends alerts.
     """
     redis = get_redis_client() if client is _UNSET else client
 
     if redis is None:
-        print("[Lock] Redis unavailable - proceeding without overlap protection.")
-        yield True
-        return
+        raise DependencyUnavailable("Redis unavailable - cannot take the run lock.")
 
     key = f"lock:{name}"
     token = str(uuid.uuid4())
@@ -120,9 +123,9 @@ def single_run_lock(name: str, ttl_seconds: int, client=_UNSET):
     try:
         acquired = bool(redis.set(key, token, nx=True, ex=ttl_seconds))
     except Exception as exc:
-        print(f"[Lock] Could not acquire ({type(exc).__name__}: {exc}) - proceeding anyway.")
-        yield True
-        return
+        raise DependencyUnavailable(
+            f"Could not acquire run lock ({type(exc).__name__}: {exc})."
+        ) from exc
 
     if not acquired:
         yield False

@@ -2,7 +2,9 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from redis_client import single_run_lock
+import pytest
+
+from redis_client import DependencyUnavailable, single_run_lock
 
 
 class FakeRedis:
@@ -82,13 +84,15 @@ class TestSingleRunLock:
                 assert second is True
 
 
-class TestDegradation:
-    def test_proceeds_without_redis(self):
-        # Redis is an optimization everywhere else in this system; a missing
-        # cache must not stop alerts going out.
-        with single_run_lock("worker:poll", 300, client=None) as acquired:
-            assert acquired is True
+class TestFailsClosed:
+    # Running without the lock is what lets two executions double-send, so a
+    # missing or broken Redis must stop the run rather than be skipped over.
+    def test_refuses_without_redis(self):
+        with pytest.raises(DependencyUnavailable):
+            with single_run_lock("worker:poll", 300, client=None):
+                pytest.fail("body must not run without a lock")
 
-    def test_proceeds_when_redis_errors(self):
-        with single_run_lock("worker:poll", 300, client=BrokenRedis()) as acquired:
-            assert acquired is True
+    def test_refuses_when_redis_errors(self):
+        with pytest.raises(DependencyUnavailable):
+            with single_run_lock("worker:poll", 300, client=BrokenRedis()):
+                pytest.fail("body must not run without a lock")

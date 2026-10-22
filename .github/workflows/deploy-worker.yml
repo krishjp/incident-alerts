@@ -42,6 +42,10 @@ permissions:
 jobs:
   deploy:
     name: Build and deploy Cloud Run Job
+    # workflow_dispatch lets you pick any branch in the "Run workflow" menu;
+    # without this guard, dispatching from a feature branch would ship that
+    # branch to the production job. Feature branches use preview-worker.yml.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
 
@@ -91,7 +95,7 @@ jobs:
             --task-timeout=300s \
             --max-retries=0 \
             --set-env-vars="ENVIRONMENT=production,RUN_LOCK_TTL_SECONDS=300" \
-            --set-secrets="DATABASE_URL=incident-alerts-database-url:latest,PHONE_ENCRYPTION_KEY=incident-alerts-phone-key:latest,REDIS_URL=incident-alerts-redis-url:latest,GEMINI_API_KEY=incident-alerts-gemini-key:latest,TWILIO_ACCOUNT_SID=incident-alerts-twilio-sid:latest,TWILIO_AUTH_TOKEN=incident-alerts-twilio-token:latest,TWILIO_PHONE_NUMBER=incident-alerts-twilio-number:latest" \
+            --set-secrets="DATABASE_URL=incident-alerts-database-url:latest,PHONE_ENCRYPTION_KEY=incident-alerts-phone-key:latest,REDIS_URL=incident-alerts-redis-url:latest,GEMINI_API_KEY=incident-alerts-gemini-key:latest,TWILIO_ACCOUNT_SID=incident-alerts-twilio-sid:latest,TWILIO_AUTH_TOKEN=incident-alerts-twilio-token:latest,TWILIO_PHONE_NUMBER=incident-alerts-twilio-number:latest,AI_GATEWAY_API_KEY=incident-alerts-ai-gateway-key:latest" \
             ${{ vars.CLOUD_SQL_INSTANCE && format('--set-cloudsql-instances={0}', vars.CLOUD_SQL_INSTANCE) || '' }}
 
       - name: Smoke-test the new image

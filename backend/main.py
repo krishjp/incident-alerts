@@ -1,6 +1,10 @@
+import sys
+
 from google import genai
+from google.genai import types
 from config import settings
-from redis_client import single_run_lock
+from alert_dedupe import is_similar_summary
+from redis_client import DependencyUnavailable, get_redis_client, single_run_lock
 from route_utils import is_within_range_pure as is_within_range
 
 # Initialize Gemini. Without a key, summarize_incident falls back to a templated
@@ -8,6 +12,11 @@ from route_utils import is_within_range_pure as is_within_range
 gemini_client = genai.Client(api_key=settings.gemini_api_key) if settings.gemini_enabled else None
 
 from cache_handler import global_incident_cache
+
+# NotifiedIncident.state prefix for an incident whose alert was suppressed as a
+# near-duplicate of another incident's. It stays silent for its whole life: the
+# incident that did alert carries the updates and the "cleared" message.
+DUPLICATE_PREFIX = "DUPLICATE:"
 
 def summarize_incident(incident_data):
     inc_num = incident_data.get('number', 'unknown')
@@ -26,7 +35,10 @@ def summarize_incident(incident_data):
     try:
         response = gemini_client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=f"Summarize this traffic incident for a quick SMS alert (max 150 chars): {incident_data}"
+            contents=f"Summarize this traffic incident for a quick SMS alert (max 150 chars): {incident_data}",
+            # Deterministic output keeps rewordings of unchanged details to a
+            # minimum; alert_dedupe catches the ones that still slip through.
+            config=types.GenerateContentConfig(temperature=0),
         )
         summary = response.text.strip()
     except Exception as e:
@@ -36,17 +48,60 @@ def summarize_incident(incident_data):
     global_incident_cache.set_summary(inc_num, raw_details, summary)
     return summary
 
-from models import get_active_subscriptions, session_scope, NotifiedIncident
+from sqlalchemy import text
+
+from models import engine, get_active_subscriptions, session_scope, NotifiedIncident
 from caltrans_client import fetch_caltrans_incidents
 from notification_queue import global_notification_queue
 
+
+def check_dependencies():
+    """
+    Returns a list of problems with Redis/Postgres; empty means both are up.
+
+    Both are hard requirements: Postgres holds subscriptions and the "already
+    alerted" fingerprints, Redis holds the run lock and the durable send queue.
+    Running with either missing risks duplicate or silently lost alerts.
+    """
+    problems = []
+    client = get_redis_client()
+    try:
+        if client is None or not client.ping():
+            problems.append("Redis unreachable")
+    except Exception as exc:
+        problems.append(f"Redis unreachable ({type(exc).__name__}: {exc})")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        problems.append(f"Postgres unreachable ({type(exc).__name__}: {exc})")
+    return problems
+
+
+def dispatch_queue():
+    """Sends queued SMS, but only after re-confirming Redis and Postgres are up."""
+    problems = check_dependencies()
+    if problems:
+        # Nothing is lost by stopping here: every queued task was persisted to
+        # Redis when enqueued (or its subscription's DB work rolled back), so the
+        # first run after recovery restores and sends it.
+        raise DependencyUnavailable(
+            f"{'; '.join(problems)} - holding "
+            f"{len(global_notification_queue.pending_tasks)} queued alert(s) until resolved."
+        )
+    global_notification_queue.process_queue()
+
 def check_and_notify():
     print("Checking active subscriptions...")
+    # Summaries already queued to each phone this pass. CHP regularly files one
+    # collision under two incident numbers, and a user with overlapping routes
+    # matches the same incident twice — either way they should get one SMS.
+    sent_this_pass = {}
     active_subs = get_active_subscriptions()
     if not active_subs:
         print("No active subscriptions for the current time window.")
         # Process any pending retries in the notification queue
-        global_notification_queue.process_queue()
+        dispatch_queue()
         return
 
     # The Caltrans feed is one statewide snapshot per HTTP call; fetch_caltrans_incidents(area)
@@ -85,7 +140,9 @@ def check_and_notify():
                 if origin_lower in loc_lower or dest_lower in loc_lower or origin_lower in desc_lower or dest_lower in desc_lower:
                     is_match = True
 
-            if is_match:
+            # The feed can repeat a placemark; a second copy would enqueue a
+            # duplicate SMS and then collide on the NotifiedIncident primary key.
+            if is_match and inc["number"] not in {m["number"] for m in matches}:
                 matches.append(inc)
 
         matched_numbers = {inc["number"] for inc in matches}
@@ -93,6 +150,9 @@ def check_and_notify():
 
         # One session per subscription covering both new/updated matches and the
         # resolved sweep, so each subscription is a single atomic unit of work.
+        # Alerts queued for it are withdrawn if that unit rolls back, so the
+        # fingerprints and the send queue never disagree.
+        enqueued = []
         try:
             with session_scope() as db:
                 id_prefix = f"{sub.id}_"
@@ -112,15 +172,42 @@ def check_and_notify():
                     if notified_record and notified_record.state == current_state:
                         continue  # already alerted, nothing changed
 
+                    if notified_record and notified_record.state.startswith(DUPLICATE_PREFIX):
+                        notified_record.state = DUPLICATE_PREFIX + current_state
+                        continue
+
                     is_update = notified_record is not None
-                    print(f"*** Match for {user} ({route_label}): Incident {inc['number']} (Update: {is_update})")
                     summary = summarize_incident(inc)
-                    prefix = "Incident UPDATE Alert" if is_update else "Incident Alert"
-                    message = f"{prefix} for {route_label}: {summary}"
+                    threshold = settings.summary_similarity_threshold
 
-                    # Enqueue outbound SMS alert with retries & DLQ handling
-                    global_notification_queue.enqueue(to_phone=phone, message=message)
+                    if is_update and notified_record.state != "RESOLVED":
+                        # Compare against the summary that was actually sent (its
+                        # cache key is the stored state), not the previous poll's
+                        # details: the state is left at the sent version below,
+                        # so small edits can't drift into a big unannounced one.
+                        sent_summary = global_incident_cache.get_summary(
+                            inc["number"], notified_record.state
+                        )
+                        if sent_summary and is_similar_summary(sent_summary, summary, threshold):
+                            print(f"    Incident {inc['number']}: details changed but summary is a near-duplicate; no SMS.")
+                            continue
 
+                    phone_sent = sent_this_pass.setdefault(phone, [])
+                    duplicate = any(is_similar_summary(prev, summary, threshold) for prev in phone_sent)
+                    if duplicate:
+                        print(f"    Incident {inc['number']}: near-duplicate of an alert already queued to this user this pass; no SMS.")
+                        current_state = DUPLICATE_PREFIX + current_state
+                    else:
+                        print(f"*** Match for {user} ({route_label}): Incident {inc['number']} (Update: {is_update})")
+                        prefix = "Incident UPDATE Alert" if is_update else "Incident Alert"
+                        message = f"{prefix} for {route_label}: {summary}"
+
+                        # Enqueue outbound SMS alert with retries & DLQ handling
+                        enqueued.append(global_notification_queue.enqueue(to_phone=phone, message=message))
+                        phone_sent.append(summary)
+
+                    # Recorded even when the SMS was suppressed, so the duplicate
+                    # incident number doesn't alert on a later pass either.
                     if notified_record:
                         notified_record.state = current_state
                     else:
@@ -136,17 +223,25 @@ def check_and_notify():
                     inc_number = record_id[len(id_prefix):]
                     if inc_number in matched_numbers:
                         continue
+                    if record.state.startswith(DUPLICATE_PREFIX):
+                        record.state = "RESOLVED"
+                        continue
                     print(f"*** Incident resolved for {user} ({route_label}): {inc_number}")
                     message = f"Incident Resolved for {route_label}: Incident {inc_number} has cleared."
-                    global_notification_queue.enqueue(to_phone=phone, message=message)
+                    enqueued.append(global_notification_queue.enqueue(to_phone=phone, message=message))
                     record.state = "RESOLVED"
         except Exception as e:
+            for task in enqueued:
+                global_notification_queue.discard(task)
+            if isinstance(e, DependencyUnavailable):
+                raise
             # One subscription's database failure must not abandon the rest of
-            # the poll cycle (or the queued notifications below).
+            # the poll cycle; the dependency check before dispatch decides
+            # whether anything gets sent.
             print(f"DB Error while processing subscription {sub.id}: {e}")
 
     # Process all queued notifications (with retries and DLQ dispatch)
-    global_notification_queue.process_queue()
+    dispatch_queue()
 
 def main():
     # Importing config already validated every required/typed setting; this
@@ -154,17 +249,29 @@ def main():
     print("Starting Incident Notification Worker...")
     print(settings.describe())
 
+    problems = check_dependencies()
+    if problems:
+        # Non-zero exit so the scheduler records a failed execution and alerting
+        # fires; the next scheduled run retries once the outage is over.
+        print(f"[Worker] Not running: {'; '.join(problems)}. No alerts will be sent until resolved.")
+        sys.exit(1)
+
     # One check_and_notify() pass, then exit — the Cloud Run Job / cron shape.
     # Undelivered retries survive via the Redis-backed notification queue, so
     # nothing is lost between invocations.
-    with single_run_lock("worker:poll", ttl_seconds=settings.run_lock_ttl_seconds) as acquired:
-        if not acquired:
-            # A previous execution is still running (the scheduler that invokes
-            # this process does not wait for the prior run to finish). Exiting 0
-            # (not an error) keeps the scheduler's failure alerting meaningful.
-            print("Previous poll cycle still running - skipping this execution.")
-            return
-        check_and_notify()
+    try:
+        with single_run_lock("worker:poll", ttl_seconds=settings.run_lock_ttl_seconds) as acquired:
+            if not acquired:
+                # A previous execution is still running (the scheduler that invokes
+                # this process does not wait for the prior run to finish). Exiting 0
+                # (not an error) keeps the scheduler's failure alerting meaningful.
+                print("Previous poll cycle still running - skipping this execution.")
+                return
+            check_and_notify()
+    except DependencyUnavailable as exc:
+        # Raised by the lock, a strict queue write, or the pre-dispatch check.
+        print(f"[Worker] Stopped: {exc}. No alerts were sent; they go out on the first run after recovery.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

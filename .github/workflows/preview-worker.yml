@@ -1,0 +1,92 @@
+name: Preview worker
+
+# Builds a feature branch's worker image and runs ONE poll pass of it as a
+# separate Cloud Run Job, against staging data. Nothing here touches the
+# production job, its image tags, or its Cloud Scheduler trigger.
+#
+# Isolation comes from the job's runtime config, not just its name — the
+# worker keeps cross-run state in Postgres (NotifiedIncident fingerprints) and
+# Redis (run lock, notification queue, summary cache), and its Redis keys are
+# unprefixed. Pointed at production's database or Redis, a preview run would
+# mark incidents as notified, steal the run lock, or drain the real queue. So
+# the preview job reads its own `incident-alerts-staging-*` secrets:
+#   incident-alerts-staging-database-url   a Neon branch, NOT the prod endpoint
+#   incident-alerts-staging-redis-url      a separate Upstash database
+#   incident-alerts-staging-phone-key      must equal Vercel's Preview PHONE_ENCRYPTION_KEY
+#   incident-alerts-staging-gemini-key     may be the same value as production's
+#   incident-alerts-ai-gateway-key         shared with production (dedupe model)
+# Twilio secrets are deliberately omitted, so SMS dispatch falls back to the
+# console mock and alerts show up in the execution's logs instead of on phones.
+#
+# The job is never attached to Cloud Scheduler: it only runs when this
+# workflow executes it.
+
+on:
+  workflow_dispatch:
+
+env:
+  JOB: incident-alerts-worker-preview
+
+permissions:
+  contents: read
+  id-token: write
+
+# One preview at a time: they share the job and the staging datastores, and
+# two overlapping executions would contend for the same run lock.
+concurrency:
+  group: preview-worker
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    name: Build and run preview Cloud Run Job
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: preview
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Artifact Registry auth
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        env:
+          IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/incident-alerts/worker-preview
+        run: |
+          # A separate repository path, and never "latest": nothing that
+          # resolves the production image can pick up a preview build.
+          docker build -t "$IMAGE:${{ github.sha }}" ./backend
+          docker push "$IMAGE:${{ github.sha }}"
+
+      - name: Deploy preview Cloud Run Job
+        env:
+          IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/incident-alerts/worker-preview
+        run: |
+          gcloud run jobs deploy "$JOB" \
+            --image "$IMAGE:${{ github.sha }}" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --service-account "incident-alerts-worker@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com" \
+            --cpu=1 \
+            --memory=512Mi \
+            --task-timeout=300s \
+            --max-retries=0 \
+            --labels="branch=$(echo '${{ github.ref_name }}' | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-' | cut -c1-63)" \
+            --set-env-vars="ENVIRONMENT=staging,RUN_LOCK_TTL_SECONDS=300" \
+            --set-secrets="DATABASE_URL=incident-alerts-staging-database-url:latest,PHONE_ENCRYPTION_KEY=incident-alerts-staging-phone-key:latest,REDIS_URL=incident-alerts-staging-redis-url:latest,GEMINI_API_KEY=incident-alerts-staging-gemini-key:latest,AI_GATEWAY_API_KEY=incident-alerts-ai-gateway-key:latest"
+
+      - name: Run one poll pass
+        run: |
+          gcloud run jobs execute "$JOB" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --wait

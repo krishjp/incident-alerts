@@ -65,7 +65,7 @@ def haversine_distance_miles(coord1, coord2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-def get_bounding_box(route_points, buffer_miles=5.0):
+def get_bounding_box(route_points, buffer_miles=3.0):
     """
     Computes a bounding box (min_lat, max_lat, min_lon, max_lon)
     extended by buffer_miles around a set of coordinates.
@@ -85,7 +85,7 @@ def get_bounding_box(route_points, buffer_miles=5.0):
         max(lons) + abs(lon_buffer)
     )
 
-def is_within_range_pure(incident_lat_lon, encoded_polyline, max_miles=5.0):
+def is_within_range_pure(incident_lat_lon, encoded_polyline, max_miles=3.0):
     if not incident_lat_lon or incident_lat_lon == "None":
         return False
     

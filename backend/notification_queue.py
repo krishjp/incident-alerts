@@ -6,7 +6,7 @@ from enum import Enum
 from typing import List, Dict, Optional, Callable, Any
 
 from config import settings
-from redis_client import get_redis_client
+from redis_client import DependencyUnavailable, get_redis_client
 
 class TaskStatus(str, Enum):
     PENDING = "PENDING"
@@ -73,15 +73,19 @@ class TaskStore:
     scale-to-zero, and instance replacement. Pending and DLQ tasks are mirrored
     into two Redis hashes so a restarted worker resumes exactly where it left off.
 
-    Degrades to a no-op when Redis is unreachable: the queue still works, it
-    just loses the cross-restart guarantee.
+    By default it degrades to a no-op when Redis is unreachable: the queue still
+    works, it just loses the cross-restart guarantee. With strict=True (the
+    worker's singleton) a failed save raises DependencyUnavailable instead, so
+    the caller can roll back rather than record an alert as sent that only
+    exists in this process's memory.
     """
 
     PENDING_KEY = "notifications:pending"
     DLQ_KEY = "notifications:dlq"
 
-    def __init__(self, client=None):
+    def __init__(self, client=None, strict: bool = False):
         self.client = client if client is not None else get_redis_client()
+        self.strict = strict
 
     @property
     def enabled(self) -> bool:
@@ -89,6 +93,8 @@ class TaskStore:
 
     def save(self, task: NotificationTask, dlq: bool = False) -> None:
         if not self.enabled:
+            if self.strict:
+                raise DependencyUnavailable("Redis unavailable - cannot persist notification task.")
             return
         try:
             self.client.hset(
@@ -98,6 +104,8 @@ class TaskStore:
             )
         except Exception as exc:
             print(f"[Queue Persist Error] Could not save task {task.task_id[:8]}: {exc}")
+            if self.strict:
+                raise DependencyUnavailable(f"Could not persist notification task: {exc}") from exc
 
     def remove(self, task_id: str, dlq: bool = False) -> None:
         if not self.enabled:
@@ -202,10 +210,18 @@ class NotificationQueue:
             status=TaskStatus.PENDING,
             next_attempt_at=time.time()
         )
-        self.pending_tasks.append(task)
+        # Persist first: with a strict store a failure raises here, before the
+        # task exists anywhere, so the caller's rollback leaves nothing behind.
         self._persist(task)
+        self.pending_tasks.append(task)
         print(f"[Queue Enqueued] Task {task.task_id[:8]} for {to_phone}")
         return task
+
+    def discard(self, task: NotificationTask) -> None:
+        """Withdraws a not-yet-sent task, e.g. when the DB work that produced it rolled back."""
+        if task in self.pending_tasks:
+            self.pending_tasks.remove(task)
+        self._forget(task.task_id)
 
     def process_queue(self, now: Optional[float] = None) -> Dict[str, int]:
         """
@@ -299,4 +315,4 @@ class NotificationQueue:
 
 # Global singleton queue instance for the background worker. persist=True so an
 # alert enqueued just before a redeploy is still delivered after it.
-global_notification_queue = NotificationQueue(persist=True)
+global_notification_queue = NotificationQueue(persist=True, store=TaskStore(strict=True))

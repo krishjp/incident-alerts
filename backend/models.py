@@ -61,6 +61,8 @@ class RouteSubscription(Base):
     userId = Column(String)
     origin = Column(String)
     destination = Column(String)
+    originDisplayName = Column(String, nullable=True)
+    destinationDisplayName = Column(String, nullable=True)
     polyline = Column(String)
     area = Column(String)
     startTime = Column(String) # e.g. "07:00"
