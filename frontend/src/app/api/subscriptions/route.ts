@@ -2,7 +2,8 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getRoutePolyline, RoutingUnavailableError } from "@/lib/route-cache";
-import { NoRouteError } from "@/lib/routing";
+import { geocodeAddress, NoRouteError } from "@/lib/routing";
+import { isInNorthAmerica, isValidLatLon, validateRoute, type Place } from "@/lib/geo";
 import { rateLimit, tooManyRequests } from "@/lib/rate-limit";
 import { NextResponse } from "next/server";
 
@@ -47,10 +48,8 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
     }
 
-    const { origin, destination, area, startTime, endTime } = (json ?? {}) as Record<
-        string,
-        unknown
-    >;
+    const { origin, destination, area, startTime, endTime, originPlace, destinationPlace } =
+        (json ?? {}) as Record<string, unknown>;
 
     const validationError = validateSubscriptionInput({
         origin,
@@ -74,10 +73,17 @@ export async function POST(req: Request) {
     }
 
     let polyline: string;
+    let originPt: Place;
+    let destPt: Place;
     try {
+        // Sequential, not Promise.all: typed (unpicked) addresses go through the
+        // 1 req/s Nominatim gate anyway.
+        originPt = await resolvePlace("Origin", String(origin), originPlace);
+        destPt = await resolvePlace("Destination", String(destination), destinationPlace);
+
         // Cache-first: a repeated origin/destination pair never re-hits the
         // routing provider. See src/lib/route-cache.ts.
-        ({ polyline } = await getRoutePolyline(String(origin), String(destination)));
+        ({ polyline } = await getRoutePolyline(originPt, destPt));
     } catch (e) {
         if (e instanceof NoRouteError) {
             return NextResponse.json({ error: e.message }, { status: 400 });
@@ -95,11 +101,18 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Could not build a route." }, { status: 500 });
     }
 
+    const routeError = validateRoute(polyline, originPt, destPt);
+    if (routeError) {
+        return NextResponse.json({ error: routeError }, { status: 400 });
+    }
+
     const sub = await prisma.routeSubscription.create({
         data: {
             userId: user.id,
             origin: String(origin).trim(),
             destination: String(destination).trim(),
+            originDisplayName: originPt.displayName.slice(0, 500),
+            destinationDisplayName: destPt.displayName.slice(0, 500),
             area: String(area),
             polyline,
             startTime: String(startTime),
@@ -186,6 +199,31 @@ export async function DELETE(req: Request) {
         .catch((e) => console.error("[Subscriptions] NotifiedIncident cleanup failed:", e));
 
     return NextResponse.json({ success: true });
+}
+
+/**
+ * Turns one side of the route form into coordinates. A picked autocomplete
+ * suggestion already carries them; anything typed by hand is geocoded here.
+ * Either way the point must lie in North America.
+ */
+async function resolvePlace(label: string, text: string, picked: unknown): Promise<Place> {
+    let place: Place;
+    if (isValidLatLon(picked)) {
+        place = { lat: picked.lat, lon: picked.lon, displayName: text.trim() };
+    } else {
+        try {
+            place = await geocodeAddress(text);
+        } catch (e) {
+            if (e instanceof NoRouteError) throw e;
+            throw new RoutingUnavailableError(
+                e instanceof Error ? e.message : "Geocoding service unavailable",
+            );
+        }
+    }
+    if (!isInNorthAmerica(place)) {
+        throw new NoRouteError(`${label} must be a location in North America.`);
+    }
+    return place;
 }
 
 function isValidTime(value: unknown): value is string {

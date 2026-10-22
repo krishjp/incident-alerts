@@ -5,6 +5,7 @@ import GoogleProvider from "next-auth/providers/google";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import { prisma } from "@/lib/prisma";
 import { rateLimit } from "@/lib/rate-limit";
+import { LOGIN_RATE_LIMITED, validateEmail, validateLoginPassword } from "@/lib/validation";
 import bcrypt from "bcryptjs";
 
 export const authOptions: NextAuthOptions = {
@@ -28,6 +29,11 @@ export const authOptions: NextAuthOptions = {
             },
             async authorize(credentials) {
                 if (!credentials?.email || !credentials?.password) return null;
+                // Malformed input can't match an account; rejecting it here also
+                // keeps oversized passwords away from bcrypt.
+                if (validateEmail(credentials.email) || validateLoginPassword(credentials.password)) {
+                    return null;
+                }
 
                 // Throttle per email address, so a stolen password list can't be
                 // sprayed against one account. Fails open if the limiter is down.
@@ -36,7 +42,10 @@ export const authOptions: NextAuthOptions = {
                     credentials.email.trim().toLowerCase(),
                     { limit: 10, windowSeconds: 300 },
                 );
-                if (!limit.allowed) return null;
+                // Thrown (not null) so the login page can say "try again later"
+                // instead of "invalid credentials" — next-auth passes the message
+                // through as the signIn() error.
+                if (!limit.allowed) throw new Error(LOGIN_RATE_LIMITED);
 
                 // Registration stores emails lowercased; the exact-match lookup
                 // first keeps any pre-existing mixed-case rows working.

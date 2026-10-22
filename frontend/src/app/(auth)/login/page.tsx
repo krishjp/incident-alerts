@@ -5,6 +5,8 @@ import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle, Chrome } from "lucide-react";
+import AuthField from "@/components/AuthField";
+import { LOGIN_RATE_LIMITED, validateEmail, validateLoginPassword } from "@/lib/validation";
 
 export default function Login() {
     const router = useRouter();
@@ -12,9 +14,18 @@ export default function Login() {
     const [password, setPassword] = useState("");
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
+    // Fields show their error once the user has left them (or tried to submit),
+    // not while they are still typing.
+    const [touched, setTouched] = useState({ email: false, password: false });
+
+    const emailError = validateEmail(email);
+    const passwordError = validateLoginPassword(password);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        setTouched({ email: true, password: true });
+        if (emailError || passwordError) return;
+
         setLoading(true);
         setError("");
 
@@ -25,7 +36,11 @@ export default function Login() {
         });
 
         if (res?.error) {
-            setError("Invalid credentials.");
+            setError(
+                res.error === LOGIN_RATE_LIMITED
+                    ? "Too many sign-in attempts. Wait a few minutes and try again."
+                    : "Incorrect email or password.",
+            );
             setLoading(false);
         } else {
             router.push("/dashboard");
@@ -49,40 +64,34 @@ export default function Login() {
 
             <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
                 <div className="bg-white py-8 px-4 shadow-sm sm:rounded-2xl sm:px-10 border border-slate-200">
-                    <form className="space-y-6" onSubmit={handleSubmit}>
+                    <form className="space-y-6" onSubmit={handleSubmit} noValidate>
                         {error && (
                             <div className="flex items-center gap-2 p-3 text-red-700 bg-red-50 border border-red-200 rounded-lg text-sm font-bold">
                                 <AlertCircle className="w-5 h-5 flex-shrink-0" />
                                 {error}
                             </div>
                         )}
-                        <div>
-                            <label className="block text-sm font-bold text-slate-700 mb-1">Email address</label>
-                            <div className="mt-1">
-                                <input
-                                    type="email"
-                                    required
-                                    value={email}
-                                    onChange={(e) => setEmail(e.target.value)}
-                                    placeholder="user@example.com"
-                                    className="appearance-none block w-full px-4 py-3 border border-slate-300 rounded-xl shadow-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm font-medium text-slate-900"
-                                />
-                            </div>
-                        </div>
+                        <AuthField
+                            label="Email address"
+                            type="email"
+                            autoComplete="email"
+                            value={email}
+                            onChange={setEmail}
+                            onBlur={() => setTouched((t) => ({ ...t, email: true }))}
+                            error={touched.email ? emailError : null}
+                            placeholder="user@example.com"
+                        />
 
-                        <div>
-                            <label className="block text-sm font-bold text-slate-700 mb-1">Password</label>
-                            <div className="mt-1">
-                                <input
-                                    type="password"
-                                    required
-                                    value={password}
-                                    onChange={(e) => setPassword(e.target.value)}
-                                    placeholder="••••••••"
-                                    className="appearance-none block w-full px-4 py-3 border border-slate-300 rounded-xl shadow-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm font-medium text-slate-900"
-                                />
-                            </div>
-                        </div>
+                        <AuthField
+                            label="Password"
+                            type="password"
+                            autoComplete="current-password"
+                            value={password}
+                            onChange={setPassword}
+                            onBlur={() => setTouched((t) => ({ ...t, password: true }))}
+                            error={touched.password ? passwordError : null}
+                            placeholder="••••••••"
+                        />
 
                         <div className="pt-2">
                             <button

@@ -7,6 +7,8 @@
 // -limits aggressively — fine for development, not for real traffic. Point it
 // at a self-hosted OSRM instance (see docker-compose.yml's `osrm` service) in
 // any environment with real users.
+import { NORTH_AMERICA_BBOX, type LatLon, type Place } from "./geo";
+
 const OSRM_URL = process.env.OSRM_URL || "http://router.project-osrm.org";
 const NOMINATIM_URL =
     process.env.NOMINATIM_URL || "https://nominatim.openstreetmap.org";
@@ -73,11 +75,17 @@ async function fetchWithRetry(
         : new Error("Upstream request failed");
 }
 
-async function geocodeAddress(address: string): Promise<{ lat: number; lon: number }> {
+/**
+ * Geocodes free text to a single place, restricted to North America so an
+ * ambiguous name ("Springfield", "Paris") can't resolve to another continent.
+ */
+export async function geocodeAddress(address: string): Promise<Place> {
     const url = new URL("/search", NOMINATIM_URL);
     url.searchParams.set("q", address);
     url.searchParams.set("format", "json");
     url.searchParams.set("limit", "1");
+    url.searchParams.set("viewbox", NORTH_AMERICA_BBOX);
+    url.searchParams.set("bounded", "1");
 
     const res = await throttleNominatim(() =>
         fetchWithRetry(url.toString(), {
@@ -91,21 +99,20 @@ async function geocodeAddress(address: string): Promise<{ lat: number; lon: numb
 
     const data = await res.json();
     if (!Array.isArray(data) || data.length === 0) {
-        throw new Error(`Could not geocode address: ${address}`);
+        throw new NoRouteError(`Could not find the address "${address}". Pick a suggestion or add more detail.`);
     }
-    return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
+    return {
+        lat: parseFloat(data[0].lat),
+        lon: parseFloat(data[0].lon),
+        displayName: String(data[0].display_name ?? address),
+    };
 }
 
 /**
- * Geocodes origin/destination addresses and fetches a driving route between them
- * using OSRM, returning an encoded polyline.
+ * Fetches a driving route between two already-geocoded points using OSRM,
+ * returning an encoded polyline.
  */
-export async function fetchOsrmPolyline(origin: string, destination: string): Promise<string> {
-    // Sequential, not Promise.all: the two geocodes share the 1 req/s Nominatim
-    // gate anyway, and issuing them in parallel only queues them behind it.
-    const originPt = await geocodeAddress(origin);
-    const destPt = await geocodeAddress(destination);
-
+export async function fetchOsrmPolyline(originPt: LatLon, destPt: LatLon): Promise<string> {
     const osrmUrl = `${OSRM_URL}/route/v1/driving/${originPt.lon},${originPt.lat};${destPt.lon},${destPt.lat}?overview=full&geometries=polyline`;
     const res = await fetchWithRetry(osrmUrl, { headers: { "User-Agent": USER_AGENT } });
 
@@ -115,7 +122,7 @@ export async function fetchOsrmPolyline(origin: string, destination: string): Pr
 
     const data = await res.json();
     if (!data.routes || data.routes.length === 0) {
-        throw new Error(`No route found between ${origin} and ${destination}`);
+        throw new NoRouteError("Could not find a driving route between these locations.");
     }
 
     // OSRM already returns a Google-format encoded polyline when geometries=polyline.
@@ -130,14 +137,16 @@ export async function fetchOsrmPolyline(origin: string, destination: string): Pr
 export class NoRouteError extends Error {}
 
 export async function fetchGooglePolyline(
-    origin: string,
-    destination: string,
+    origin: LatLon,
+    destination: LatLon,
     apiKey: string,
 ): Promise<string> {
+    // Coordinates rather than address text, so Google routes between exactly the
+    // points that were validated instead of re-geocoding the strings its own way.
     const url =
         `https://maps.googleapis.com/maps/api/directions/json` +
-        `?origin=${encodeURIComponent(origin)}` +
-        `&destination=${encodeURIComponent(destination)}` +
+        `?origin=${origin.lat},${origin.lon}` +
+        `&destination=${destination.lat},${destination.lon}` +
         `&key=${apiKey}`;
 
     const res = await fetchWithRetry(url, {});

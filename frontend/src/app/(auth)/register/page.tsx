@@ -4,16 +4,38 @@ import { useState } from "react";
 import Link from "next/link";
 import { signIn } from "next-auth/react";
 import { AlertCircle, Chrome } from "lucide-react";
+import AuthField from "@/components/AuthField";
+import {
+    MIN_PASSWORD_LENGTH,
+    validateEmail,
+    validateName,
+    validateNewPassword,
+} from "@/lib/validation";
 
 export default function Register() {
     const [name, setName] = useState("");
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
+    const [confirmPassword, setConfirmPassword] = useState("");
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
+    // Fields show their error once the user has left them (or tried to submit),
+    // not while they are still typing.
+    const [touched, setTouched] = useState({ name: false, email: false, password: false, confirm: false });
+    const touch = (field: keyof typeof touched) => () => setTouched((t) => ({ ...t, [field]: true }));
+
+    const errors = {
+        name: validateName(name),
+        email: validateEmail(email),
+        password: validateNewPassword(password),
+        confirm: confirmPassword !== password ? "Passwords don't match." : null,
+    };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        setTouched({ name: true, email: true, password: true, confirm: true });
+        if (Object.values(errors).some(Boolean)) return;
+
         setLoading(true);
         setError("");
 
@@ -58,7 +80,7 @@ export default function Register() {
 
             <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
                 <div className="bg-white py-8 px-4 shadow-sm sm:rounded-2xl sm:px-10 border border-slate-200">
-                    <form className="space-y-6" onSubmit={handleSubmit}>
+                    <form className="space-y-6" onSubmit={handleSubmit} noValidate>
                         {error && (
                             <div className="flex items-center gap-2 p-3 text-red-700 bg-red-50 border border-red-200 rounded-lg text-sm font-bold">
                                 <AlertCircle className="w-5 h-5 flex-shrink-0" />
@@ -66,47 +88,50 @@ export default function Register() {
                             </div>
                         )}
 
-                        <div>
-                            <label className="block text-sm font-bold text-slate-700 mb-1">Full Name</label>
-                            <div className="mt-1">
-                                <input
-                                    type="text"
-                                    required
-                                    value={name}
-                                    onChange={(e) => setName(e.target.value)}
-                                    placeholder="John Doe"
-                                    className="appearance-none block w-full px-4 py-3 border border-slate-300 rounded-xl shadow-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm font-medium text-slate-900"
-                                />
-                            </div>
-                        </div>
+                        <AuthField
+                            label="Full Name"
+                            type="text"
+                            autoComplete="name"
+                            value={name}
+                            onChange={setName}
+                            onBlur={touch("name")}
+                            error={touched.name ? errors.name : null}
+                            placeholder="John Doe"
+                        />
 
-                        <div>
-                            <label className="block text-sm font-bold text-slate-700 mb-1">Email address</label>
-                            <div className="mt-1">
-                                <input
-                                    type="email"
-                                    required
-                                    value={email}
-                                    onChange={(e) => setEmail(e.target.value)}
-                                    placeholder="user@example.com"
-                                    className="appearance-none block w-full px-4 py-3 border border-slate-300 rounded-xl shadow-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm font-medium text-slate-900"
-                                />
-                            </div>
-                        </div>
+                        <AuthField
+                            label="Email address"
+                            type="email"
+                            autoComplete="email"
+                            value={email}
+                            onChange={setEmail}
+                            onBlur={touch("email")}
+                            error={touched.email ? errors.email : null}
+                            placeholder="user@example.com"
+                        />
 
-                        <div>
-                            <label className="block text-sm font-bold text-slate-700 mb-1">Password</label>
-                            <div className="mt-1">
-                                <input
-                                    type="password"
-                                    required
-                                    value={password}
-                                    onChange={(e) => setPassword(e.target.value)}
-                                    placeholder="••••••••"
-                                    className="appearance-none block w-full px-4 py-3 border border-slate-300 rounded-xl shadow-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm font-medium text-slate-900"
-                                />
-                            </div>
-                        </div>
+                        <AuthField
+                            label="Password"
+                            type="password"
+                            autoComplete="new-password"
+                            value={password}
+                            onChange={setPassword}
+                            onBlur={touch("password")}
+                            error={touched.password ? errors.password : null}
+                            hint={`At least ${MIN_PASSWORD_LENGTH} characters, including a letter and a number.`}
+                            placeholder="••••••••"
+                        />
+
+                        <AuthField
+                            label="Confirm password"
+                            type="password"
+                            autoComplete="new-password"
+                            value={confirmPassword}
+                            onChange={setConfirmPassword}
+                            onBlur={touch("confirm")}
+                            error={touched.confirm ? errors.confirm : null}
+                            placeholder="••••••••"
+                        />
 
                         <div className="pt-2">
                             <button

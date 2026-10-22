@@ -57,6 +57,10 @@ model RouteSubscription {
   userId      String
   origin      String
   destination String
+  /// Full place name the origin/destination resolved to (geocoder output), so
+  /// users can see which "Main St" a route was actually built from.
+  originDisplayName      String?
+  destinationDisplayName String?
   polyline    String   @db.Text
   area        String   // e.g. "Los Angeles"
   startTime   String   // e.g. "07:00"
@@ -82,7 +86,7 @@ model VerificationToken {
 /// rate-limits aggressively (HTTP 429) and costs money respectively.
 /// Two users commuting the same corridor now share one lookup.
 model RouteCache {
-  /// sha256 of "<normalized origin>|<normalized destination>|<provider>"
+  /// sha256 of "<origin lat,lon>|<destination lat,lon>|<provider>", coords at 4 dp
   key         String   @id
   origin      String
   destination String

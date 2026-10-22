@@ -5,6 +5,7 @@ import {
     fetchOsrmPolyline,
     NoRouteError,
 } from "./routing";
+import type { Place } from "./geo";
 
 /**
  * Persistent origin/destination -> polyline cache (the RouteCache table).
@@ -20,25 +21,18 @@ import {
 export type RouteProvider = "google" | "osrm";
 
 /**
- * Normalizes an address for cache-key purposes: case-insensitive, whitespace-
- * and punctuation-insensitive. "100 Main St., LA" and "100 main st  la" share
- * an entry; anything more aggressive risks collapsing genuinely distinct
- * addresses, so the raw strings are stored alongside for inspection.
+ * Keyed by resolved coordinates rather than address text: by the time a route
+ * is requested both endpoints are already geocoded, and "100 Main St, LA" vs
+ * "100 Main Street, Los Angeles" are the same trip. Four decimals is ~11 m,
+ * well inside the distance a router snaps an address to the nearest road.
+ * The display names are stored alongside for inspection.
  */
-function normalizeAddress(address: string): string {
-    return address
-        .toLowerCase()
-        .replace(/[.,]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
+function coordKey({ lat, lon }: Place): string {
+    return `${lat.toFixed(4)},${lon.toFixed(4)}`;
 }
 
-function cacheKey(
-    origin: string,
-    destination: string,
-    provider: RouteProvider,
-): string {
-    const raw = `${normalizeAddress(origin)}|${normalizeAddress(destination)}|${provider}`;
+function cacheKey(origin: Place, destination: Place, provider: RouteProvider): string {
+    const raw = `${coordKey(origin)}|${coordKey(destination)}|${provider}`;
     return createHash("sha256").update(raw).digest("hex");
 }
 
@@ -52,8 +46,8 @@ export class RoutingUnavailableError extends Error {}
  * blocking subscription creation.
  */
 export async function getRoutePolyline(
-    origin: string,
-    destination: string,
+    origin: Place,
+    destination: Place,
 ): Promise<{ polyline: string; provider: RouteProvider; cached: boolean }> {
     const apiKey = process.env.GOOGLE_MAPS_API_KEY;
     const useGoogle = Boolean(apiKey) && apiKey !== "dummy_map_key";
@@ -90,7 +84,13 @@ export async function getRoutePolyline(
         // would otherwise race on the primary key.
         await prisma.routeCache.upsert({
             where: { key },
-            create: { key, origin, destination, provider, polyline },
+            create: {
+                key,
+                origin: origin.displayName,
+                destination: destination.displayName,
+                provider,
+                polyline,
+            },
             update: { polyline },
         });
     } catch (e) {

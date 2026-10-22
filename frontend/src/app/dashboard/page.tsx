@@ -2,11 +2,15 @@
 
 import { useState, useEffect } from "react";
 import { Plus, Trash2, ShieldAlert, Route, Pause, Play } from "lucide-react";
+import AddressAutocomplete from "@/components/AddressAutocomplete";
+import type { LatLon } from "@/lib/geo";
 
 type Subscription = {
     id: string;
     origin: string;
     destination: string;
+    originDisplayName: string | null;
+    destinationDisplayName: string | null;
     area: string;
     startTime: string;
     endTime: string;
@@ -18,6 +22,10 @@ export default function Dashboard() {
     const [loading, setLoading] = useState(true);
     const [phone, setPhone] = useState("");
     const [form, setForm] = useState({ origin: "", destination: "", area: "Los Angeles", startTime: "07:00", endTime: "09:00" });
+    // Coordinates of the picked autocomplete suggestion per side; null means the
+    // address was typed by hand and the server will geocode it.
+    const [originPlace, setOriginPlace] = useState<LatLon | null>(null);
+    const [destinationPlace, setDestinationPlace] = useState<LatLon | null>(null);
     const [adding, setAdding] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
@@ -64,7 +72,7 @@ export default function Dashboard() {
         setError(null);
         try {
             const res = await fetch("/api/subscriptions", {
-                method: "POST", body: JSON.stringify(form)
+                method: "POST", body: JSON.stringify({ ...form, originPlace, destinationPlace })
             });
             if (!res.ok) {
                 const err = await res.json();
@@ -73,6 +81,8 @@ export default function Dashboard() {
                 const newSub = await res.json();
                 setSubs([...subs, newSub]);
                 setForm({ ...form, origin: "", destination: "" }); // reset text fields
+                setOriginPlace(null);
+                setDestinationPlace(null);
             }
         } catch {
             setError("Error adding route.");
@@ -159,12 +169,26 @@ export default function Dashboard() {
 
                     <div className="flex-1 w-full">
                         <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Origin Address/Location</label>
-                        <input required type="text" value={form.origin} onChange={e => setForm({ ...form, origin: e.target.value })} placeholder="e.g. 100 Main St, LA" className="w-full px-4 py-2.5 border border-slate-200 text-slate-900 placeholder:text-slate-400 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none font-medium" />
+                        <AddressAutocomplete
+                            value={form.origin}
+                            place={originPlace}
+                            onChange={(origin, place) => { setForm(f => ({ ...f, origin })); setOriginPlace(place); }}
+                            disabled={adding}
+                            placeholder="Start typing, e.g. 100 Main St, Los Angeles"
+                            inputClassName="w-full px-4 py-2.5 border border-slate-200 text-slate-900 placeholder:text-slate-400 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none font-medium"
+                        />
                     </div>
 
                     <div className="flex-1 w-full">
                         <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Destination</label>
-                        <input required type="text" value={form.destination} onChange={e => setForm({ ...form, destination: e.target.value })} placeholder="e.g. LAX Airport" className="w-full px-4 py-2.5 border border-slate-200 text-slate-900 placeholder:text-slate-400 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none font-medium" />
+                        <AddressAutocomplete
+                            value={form.destination}
+                            place={destinationPlace}
+                            onChange={(destination, place) => { setForm(f => ({ ...f, destination })); setDestinationPlace(place); }}
+                            disabled={adding}
+                            placeholder="Start typing, e.g. LAX Airport"
+                            inputClassName="w-full px-4 py-2.5 border border-slate-200 text-slate-900 placeholder:text-slate-400 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none font-medium"
+                        />
                     </div>
 
                     <div className="w-full lg:w-auto lg:flex-1">
@@ -208,6 +232,14 @@ export default function Dashboard() {
                                         <span className="font-bold text-lg">{sub.destination}</span>
                                         <span className="text-xs px-2 py-1 bg-slate-100 rounded-md font-medium text-slate-600">{sub.area}</span>
                                     </div>
+                                    {(sub.originDisplayName || sub.destinationDisplayName) && (
+                                        // What the geocoder actually matched, so a wrong "Main St"
+                                        // is visible here instead of only in missed alerts.
+                                        <div className="text-xs text-slate-500 mt-1 max-w-2xl">
+                                            Routed from <span className="font-medium text-slate-600">{sub.originDisplayName ?? sub.origin}</span>
+                                            {" "}to <span className="font-medium text-slate-600">{sub.destinationDisplayName ?? sub.destination}</span>
+                                        </div>
+                                    )}
                                     {sub.isActive ? (
                                         <div className="text-sm mt-1 font-medium bg-emerald-50 inline-block px-2 py-0.5 rounded text-emerald-700">
                                             Alerting between {sub.startTime} and {sub.endTime}

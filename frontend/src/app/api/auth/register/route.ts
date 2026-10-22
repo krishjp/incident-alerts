@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { clientIdentifier, rateLimit, tooManyRequests } from "@/lib/rate-limit";
+import { validateEmail, validateName, validateNewPassword } from "@/lib/validation";
 import bcrypt from "bcryptjs";
-
-const MIN_PASSWORD_LENGTH = 8;
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export async function POST(req: Request) {
     // Unauthenticated endpoint, so the limit is keyed by client IP. Bulk signup
@@ -18,17 +16,10 @@ export async function POST(req: Request) {
     try {
         const { name, email, password } = await req.json();
 
-        if (!email || !password) {
-            return NextResponse.json({ error: "Email and password are required." }, { status: 400 });
-        }
-        if (typeof email !== "string" || !EMAIL_PATTERN.test(email)) {
-            return NextResponse.json({ error: "Enter a valid email address." }, { status: 400 });
-        }
-        if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) {
-            return NextResponse.json(
-                { error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` },
-                { status: 400 },
-            );
+        const validationError =
+            validateName(name) ?? validateEmail(email) ?? validateNewPassword(password);
+        if (validationError) {
+            return NextResponse.json({ error: validationError }, { status: 400 });
         }
 
         const normalizedEmail = email.trim().toLowerCase();
@@ -40,7 +31,7 @@ export async function POST(req: Request) {
         const hashedPassword = await bcrypt.hash(password, 10);
         const user = await prisma.user.create({
             data: {
-                name: typeof name === "string" ? name.trim().slice(0, 100) : null,
+                name: name.trim(),
                 email: normalizedEmail,
                 password: hashedPassword,
             },
