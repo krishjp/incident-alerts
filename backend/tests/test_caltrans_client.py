@@ -1,9 +1,10 @@
 import sys
 import os
+from pathlib import Path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import pytest
-from caltrans_client import CaltransAPIClient, fetch_caltrans_incidents
+from caltrans_client import CaltransAPIClient, fetch_caltrans_incidents, resolve_feed_url
 
 SAMPLE_KML_PAYLOAD = b"""<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
@@ -81,3 +82,18 @@ def test_live_caltrans_fetch():
     assert "number" in first
     assert "details" in first
     assert "lat_lon" in first["details"]
+
+
+class TestResolveFeedUrl:
+    def test_unset_or_empty_uses_live_feed(self):
+        assert resolve_feed_url(None) == CaltransAPIClient.DEFAULT_KML_URL
+        assert resolve_feed_url("") == CaltransAPIClient.DEFAULT_KML_URL
+
+    def test_url_with_scheme_is_unchanged(self):
+        assert resolve_feed_url("https://example.com/feed.kml") == "https://example.com/feed.kml"
+
+    def test_relative_path_resolves_against_backend_dir(self):
+        backend_dir = Path(__file__).resolve().parent.parent
+        expected = backend_dir / "fixtures" / "torrance_hb_405_test.kml"
+        assert resolve_feed_url("fixtures/torrance_hb_405_test.kml") == expected.as_uri()
+

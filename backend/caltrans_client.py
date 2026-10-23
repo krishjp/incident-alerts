@@ -3,6 +3,7 @@ import re
 import urllib.request
 import xml.etree.ElementTree as ET
 from html import unescape
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from data_classes import Incident, IncidentDetails
@@ -144,11 +145,28 @@ class CaltransAPIClient:
         return incidents_list
 
 
+def resolve_feed_url(value: Optional[str]) -> str:
+    """
+    Turns CALTRANS_FEED_URL into something urlopen can fetch. Unset/empty means
+    the live feed; a value without a scheme is a path relative to backend/, so
+    one .env entry like "fixtures/injected_incidents.kml" works both on the host
+    and inside the worker container, where an absolute host path doesn't exist.
+    """
+    if not value:
+        return CaltransAPIClient.DEFAULT_KML_URL
+    if "://" in value:
+        return value
+    path = Path(value)
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parent / path
+    return path.resolve().as_uri()
+
+
 # Singleton / Convenience helper function.
-# CALTRANS_FEED_URL lets local testing point at a fixture KML file (e.g.
-# "file:///abs/path/to/injected_incidents.kml") instead of the live feed —
-# urllib.request.urlopen natively supports file:// URLs. Unset in production.
-_client = CaltransAPIClient(feed_url=os.getenv("CALTRANS_FEED_URL", CaltransAPIClient.DEFAULT_KML_URL))
+# CALTRANS_FEED_URL lets local testing point at a fixture KML file instead of
+# the live feed — urllib.request.urlopen natively supports file:// URLs. Unset
+# in production.
+_client = CaltransAPIClient(feed_url=resolve_feed_url(os.getenv("CALTRANS_FEED_URL")))
 
 def fetch_caltrans_incidents(area_name: Optional[str] = None) -> List[Dict[str, Any]]:
     """Helper function to fetch Caltrans incidents using the API client."""

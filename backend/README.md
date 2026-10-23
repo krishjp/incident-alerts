@@ -87,7 +87,7 @@ notification queue) end-to-end without hitting the live Caltrans feed.
    - the `iw-title`/`iw-text` blocks for the incident type, timestamp, and location text
 2. Point the worker at the fixture instead of the live feed in `backend/.env`:
    ```env
-   CALTRANS_FEED_URL="file:///absolute/path/to/backend/fixtures/injected_incidents.kml"
+   CALTRANS_FEED_URL="fixtures/injected_incidents.kml"   # relative to backend/; works in Docker too
    ```
 3. Run the worker:
    ```bash
