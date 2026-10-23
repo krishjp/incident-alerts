@@ -85,21 +85,26 @@ def get_bounding_box(route_points, buffer_miles=3.0):
         max(lons) + abs(lon_buffer)
     )
 
-def is_within_range_pure(incident_lat_lon, encoded_polyline, max_miles=3.0):
+def parse_lat_lon(incident_lat_lon):
+    """Parses the feed's "lat lon" (or "lat:lon") string; None if absent or malformed."""
     if not incident_lat_lon or incident_lat_lon == "None":
-        return False
-    
+        return None
     try:
         parts = incident_lat_lon.strip().split()
         if len(parts) == 2:
-            inc_lat, inc_lon = float(parts[0]), float(parts[1])
-        elif ":" in incident_lat_lon:
+            return float(parts[0]), float(parts[1])
+        if ":" in incident_lat_lon:
             parts = incident_lat_lon.replace(' ', '').split(":")
-            inc_lat, inc_lon = float(parts[0]), float(parts[1])
-        else:
-            return False
+            return float(parts[0]), float(parts[1])
     except Exception:
+        pass
+    return None
+
+def is_within_range_pure(incident_lat_lon, encoded_polyline, max_miles=3.0):
+    incident_pt = parse_lat_lon(incident_lat_lon)
+    if incident_pt is None:
         return False
+    inc_lat, inc_lon = incident_pt
 
     if encoded_polyline == "dummy_polyline":
         return True
@@ -117,7 +122,6 @@ def is_within_range_pure(incident_lat_lon, encoded_polyline, max_miles=3.0):
     if not (min_lat <= inc_lat <= max_lat and min_lon <= inc_lon <= max_lon):
         return False
 
-    incident_pt = (inc_lat, inc_lon)
     for pt in route_points:
         dist = haversine_distance_miles(incident_pt, pt)
         if dist <= max_miles:
@@ -125,3 +129,19 @@ def is_within_range_pure(incident_lat_lon, encoded_polyline, max_miles=3.0):
                 
     return False
 
+def distance_to_route_miles(incident_lat_lon, encoded_polyline):
+    """
+    Distance from the incident to the nearest route point, or None when either
+    side can't be decoded. Only used to label an alert that already matched, so
+    it skips the bounding-box pre-filter.
+    """
+    incident_pt = parse_lat_lon(incident_lat_lon)
+    if incident_pt is None:
+        return None
+    try:
+        route_points = decode_polyline(encoded_polyline)
+    except Exception:
+        return None
+    if not route_points:
+        return None
+    return min(haversine_distance_miles(incident_pt, pt) for pt in route_points)

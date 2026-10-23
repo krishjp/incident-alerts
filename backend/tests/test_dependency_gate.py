@@ -88,7 +88,7 @@ def test_queue_write_failure_rolls_back_fingerprints_and_sends_nothing(monkeypat
     sent = []
     queue = NotificationQueue(sender_func=lambda p, m: sent.append(m) or True,
                               store=TaskStore(client=BrokenRedis(), strict=True))
-    sub = SimpleNamespace(id="sub1", origin="A", destination="B", polyline="x")
+    sub = SimpleNamespace(id="sub1", userId="user1", origin="A", destination="B", polyline="x")
     incident = {"number": "LA01", "location": "I-405", "location_desc": "",
                 "details": {"lat_lon": "33.8 -118.3", "full_text_blob": "collision"}}
 

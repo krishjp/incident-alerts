@@ -175,12 +175,16 @@ class _FakeDb:
 
     def __init__(self):
         self.rows = {}
+        self.messages = []
 
     def query(self, _model):
         return _FakeQuery(self.rows.values())
 
     def add(self, record):
-        self.rows[record.id] = record
+        if isinstance(record, main.AlertMessage):
+            self.messages.append(record)
+        else:
+            self.rows[record.id] = record
 
 
 class _FakeQueue:
@@ -211,7 +215,7 @@ def worker(monkeypatch):
     summaries = {}
     cache = {}
 
-    sub = SimpleNamespace(id="sub1", origin="Torrance", destination="Lawndale", polyline="x")
+    sub = SimpleNamespace(id="sub1", userId="user1", origin="Torrance", destination="Lawndale", polyline="x")
     monkeypatch.setattr(main, "get_active_subscriptions",
                         lambda: [{"sub": sub, "phone": "+15551234567", "user": "u@example.com"}])
     monkeypatch.setattr(main, "fetch_caltrans_incidents", lambda: list(feed))
@@ -292,3 +296,42 @@ class TestCheckAndNotifyDedupe:
         main.check_and_notify()
 
         assert len(worker.queue.sent) == 1
+
+    def test_each_queued_alert_is_logged_with_its_route(self, worker):
+        worker.summaries.update({"a": REWORDED_A})
+        worker.feed[:] = [_incident("LA01", "a")]
+        main.check_and_notify()
+
+        worker.feed[:] = []
+        main.check_and_notify()
+
+        assert [(m.kind, m.incidentNumber) for m in worker.db.messages] == [
+            ("NEW", "LA01"), ("RESOLVED", "LA01"),
+        ]
+        new, resolved = worker.db.messages
+        assert new.userId == "user1" and new.subscriptionId == "sub1"
+        assert new.routeLabel == "Torrance->Lawndale"
+        assert new.matchMethod == "spatial"
+        assert new.message == worker.queue.sent[0][1]
+        assert resolved.matchMethod is None and resolved.distanceMiles is None
+
+    def test_suppressed_duplicate_is_not_logged(self, worker):
+        worker.summaries.update({"a": REWORDED_A, "b": REWORDED_B})
+        worker.feed[:] = [_incident("LA01", "a"), _incident("LA02", "b")]
+        main.check_and_notify()
+
+        assert len(worker.db.messages) == len(worker.queue.sent) == 1
+
+    def test_user_without_phone_is_logged_but_not_queued(self, worker, monkeypatch):
+        sub = SimpleNamespace(id="sub1", userId="user1", origin="Torrance", destination="Lawndale", polyline="x")
+        monkeypatch.setattr(main, "get_active_subscriptions",
+                            lambda: [{"sub": sub, "phone": None, "user": "u@example.com"}])
+        worker.summaries.update({"a": REWORDED_A})
+        worker.feed[:] = [_incident("LA01", "a")]
+        main.check_and_notify()
+
+        worker.feed[:] = []
+        main.check_and_notify()
+
+        assert worker.queue.sent == []
+        assert [(m.kind, m.delivery) for m in worker.db.messages] == [("NEW", "none"), ("RESOLVED", "none")]

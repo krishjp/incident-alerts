@@ -50,6 +50,7 @@ model User {
   accounts      Account[]
   sessions      Session[]
   subscriptions RouteSubscription[]
+  alertMessages AlertMessage[]
 }
 
 model RouteSubscription {
@@ -104,4 +105,27 @@ model NotifiedIncident {
   state     String   @db.Text
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+/// Every alert the worker queued, written alongside the NotifiedIncident
+/// fingerprint. Backs the dashboard's live message tail, which stands in for
+/// the SMS inbox while Twilio isn't configured.
+model AlertMessage {
+  id             String   @id @default(cuid())
+  userId         String
+  /// Not a relation: the log outlives a deleted route, which routeLabel keeps naming.
+  subscriptionId String
+  routeLabel     String   // "origin->destination" as it appeared in the SMS
+  incidentNumber String
+  kind           String   // "NEW" | "UPDATE" | "RESOLVED"
+  matchMethod    String?  // "spatial" (within MATCH_RADIUS_MILES) | "text" (no lat/lon, name match)
+  distanceMiles  Float?
+  location       String?
+  message        String   @db.Text
+  delivery       String   // "twilio" | "mock" (Twilio not configured) | "none" (no phone saved; log only)
+  createdAt      DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }

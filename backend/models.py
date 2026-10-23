@@ -1,7 +1,9 @@
+import uuid
+
 import pytz
 from contextlib import contextmanager
-from datetime import datetime
-from sqlalchemy import create_engine, Column, String, Boolean, DateTime
+from datetime import datetime, timedelta, timezone
+from sqlalchemy import create_engine, Column, String, Boolean, DateTime, Float
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from config import settings
@@ -82,6 +84,40 @@ class NotifiedIncident(Base):
     state = Column(String)
     createdAt = Column(DateTime, default=datetime.utcnow)
     updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class AlertMessage(Base):
+    """
+    Log of every alert the worker queued, read by the dashboard's live message
+    tail. Written in the same session as the NotifiedIncident fingerprint, so a
+    rolled-back subscription leaves no row for an alert that was withdrawn.
+    """
+    __tablename__ = "AlertMessage"
+    # Prisma's @default(cuid()) is client-side, so rows written here need their own id.
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex)
+    userId = Column(String)
+    subscriptionId = Column(String)
+    routeLabel = Column(String)
+    incidentNumber = Column(String)
+    kind = Column(String)  # "NEW" | "UPDATE" | "RESOLVED"
+    matchMethod = Column(String, nullable=True)  # "spatial" | "text"; None for RESOLVED
+    distanceMiles = Column(Float, nullable=True)
+    location = Column(String, nullable=True)
+    message = Column(String)
+    # "twilio" | "mock" (queued; mock when Twilio isn't configured) | "none" (no phone, log only)
+    delivery = Column(String)
+    createdAt = Column(DateTime, default=datetime.utcnow)
+def prune_alert_messages(db, now=None):
+    """Deletes AlertMessage rows past ALERT_LOG_MAX_AGE_HOURS; returns how many."""
+    # createdAt is naive UTC, like the rest of the schema.
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    cutoff = now - timedelta(hours=settings.alert_log_max_age_hours)
+    return (
+        db.query(AlertMessage)
+        .filter(AlertMessage.createdAt < cutoff)
+        .delete(synchronize_session=False)
+    )
+
+
 def is_in_time_window(current_time_str: str, start: str, end: str) -> bool:
     """
     True when "HH:MM" current_time_str falls inside [start, end], handling
@@ -110,15 +146,15 @@ def get_active_subscriptions():
 
         # Time filtering stays in Python: the window logic wraps past midnight,
         # which is awkward to express portably in SQL.
+        # Users without a phone are still included: their alerts go to the
+        # dashboard's message log only (phone is None, nothing is queued for SMS).
         active_subs = []
         for sub, user in rows:
-            if not user.phone:
-                continue
             if not is_in_time_window(current_time_str, sub.startTime, sub.endTime):
                 continue
             active_subs.append({
                 "sub": sub,
-                "phone": decrypt_phone(user.phone),
+                "phone": decrypt_phone(user.phone) if user.phone else None,
                 "user": user.name or "User",
             })
         return active_subs

@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import pytest
 from route_generator import fetch_osrm_polyline
-from route_utils import encode_polyline, is_within_range_pure as is_within_range
+from route_utils import distance_to_route_miles, encode_polyline, is_within_range_pure as is_within_range
 from caltrans_client import fetch_caltrans_incidents
 
 # --- Fixtures ---
@@ -160,3 +160,15 @@ def test_live_chp_scrape_against_route(golf_commute_route):
             matched_count += 1
             
     print(f"\n[pytest integration] Found {matched_count}/{len(incidents)} live incidents near route.")
+
+
+class TestDistanceToRoute:
+    def test_distance_to_nearest_point(self):
+        polyline = encode_polyline([(33.80, -118.30), (33.90, -118.30)])
+        # 0.01 deg latitude ~ 0.69 mi north of the route's last point.
+        assert distance_to_route_miles("33.91 -118.30", polyline) == pytest.approx(0.69, abs=0.01)
+
+    def test_unparseable_inputs_return_none(self):
+        polyline = encode_polyline([(33.80, -118.30)])
+        assert distance_to_route_miles(None, polyline) is None
+        assert distance_to_route_miles("garbage", polyline) is None

@@ -107,6 +107,13 @@ if you want to avoid hitting live external services (Caltrans, Nominatim/OSRM, G
    undelivered alerts survive the process exiting between passes. Persistence is **opt-in per instance**
    (`NotificationQueue(persist=True)`, set only on the global singleton) so tests and ad-hoc instances never
    inherit a developer's local Redis state.
+   Every enqueued alert is also written to `AlertMessage` (same session as the fingerprint, so a rollback
+   removes it too) with its route label, kind, and how it matched (`spatial` + distance, or `text` fallback).
+   The dashboard's **Live Messages** page (`/dashboard/messages` → `GET /api/messages?since=`) polls it as a
+   live tail, the stand-in SMS inbox until Twilio is configured. Suppressed near-duplicates aren't logged.
+   A phone number is only needed for SMS: users without one are still matched, and their alerts are logged
+   with `delivery = "none"` and never queued.
+   After each pass `prune_message_log()` deletes messages older than `ALERT_LOG_MAX_AGE_HOURS` (48).
 
 ### Route polyline generation happens in two unrelated places
 - The frontend generates the polyline at subscription-creation time

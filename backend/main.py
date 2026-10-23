@@ -5,7 +5,7 @@ from google.genai import types
 from config import settings
 from alert_dedupe import is_similar_summary
 from redis_client import DependencyUnavailable, get_redis_client, single_run_lock
-from route_utils import is_within_range_pure as is_within_range
+from route_utils import distance_to_route_miles, is_within_range_pure as is_within_range
 
 # Initialize Gemini. Without a key, summarize_incident falls back to a templated
 # mock string rather than failing the poll cycle.
@@ -50,7 +50,7 @@ def summarize_incident(incident_data):
 
 from sqlalchemy import text
 
-from models import engine, get_active_subscriptions, session_scope, NotifiedIncident
+from models import engine, get_active_subscriptions, prune_alert_messages, session_scope, AlertMessage, NotifiedIncident
 from caltrans_client import fetch_caltrans_incidents
 from notification_queue import global_notification_queue
 
@@ -93,7 +93,7 @@ def dispatch_queue():
 
 def check_and_notify():
     print("Checking active subscriptions...")
-    # Summaries already queued to each phone this pass. CHP regularly files one
+    # Summaries already sent to each user this pass. CHP regularly files one
     # collision under two incident numbers, and a user with overlapping routes
     # matches the same incident twice — either way they should get one SMS.
     sent_this_pass = {}
@@ -123,6 +123,9 @@ def check_and_notify():
         # closed a fresh session per matched incident, which meant a pooled
         # connection checkout for every alert.
         matches = []
+        # How each match was made ("spatial" or "text"), so the dashboard's
+        # message log can show which check let an alert through.
+        match_methods = {}
         for inc in all_incidents:
             lat_lon_val = inc['details'].get('lat_lon')
 
@@ -130,6 +133,7 @@ def check_and_notify():
             is_match = is_within_range(
                 lat_lon_val, sub.polyline, max_miles=settings.match_radius_miles
             )
+            method = "spatial"
 
             # Fallback naive check if no lat/lon from the feed but names match
             if not is_match and not lat_lon_val:
@@ -139,11 +143,13 @@ def check_and_notify():
                 desc_lower = inc["location_desc"].lower()
                 if origin_lower in loc_lower or dest_lower in loc_lower or origin_lower in desc_lower or dest_lower in desc_lower:
                     is_match = True
+                    method = "text"
 
             # The feed can repeat a placemark; a second copy would enqueue a
             # duplicate SMS and then collide on the NotifiedIncident primary key.
             if is_match and inc["number"] not in {m["number"] for m in matches}:
                 matches.append(inc)
+                match_methods[inc["number"]] = method
 
         matched_numbers = {inc["number"] for inc in matches}
         print(f"  {route_label}: {len(matches)} incident(s) within {settings.match_radius_miles} miles.")
@@ -153,6 +159,32 @@ def check_and_notify():
         # Alerts queued for it are withdrawn if that unit rolls back, so the
         # fingerprints and the send queue never disagree.
         enqueued = []
+
+        def deliver(db, kind, inc_number, message, inc=None):
+            """Logs the alert for the dashboard, and queues an SMS if the user has a phone."""
+            if phone:
+                # Enqueue outbound SMS alert with retries & DLQ handling
+                enqueued.append(global_notification_queue.enqueue(to_phone=phone, message=message))
+                delivery = "twilio" if settings.sms_enabled else "mock"
+            else:
+                delivery = "none"
+            method = match_methods.get(inc_number) if inc else None
+            db.add(AlertMessage(
+                userId=sub.userId,
+                subscriptionId=sub.id,
+                routeLabel=route_label,
+                incidentNumber=inc_number,
+                kind=kind,
+                matchMethod=method,
+                distanceMiles=(
+                    distance_to_route_miles(inc["details"].get("lat_lon"), sub.polyline)
+                    if method == "spatial" else None
+                ),
+                location=inc["location"] if inc else None,
+                message=message,
+                delivery=delivery,
+            ))
+
         try:
             with session_scope() as db:
                 id_prefix = f"{sub.id}_"
@@ -192,8 +224,8 @@ def check_and_notify():
                             print(f"    Incident {inc['number']}: details changed but summary is a near-duplicate; no SMS.")
                             continue
 
-                    phone_sent = sent_this_pass.setdefault(phone, [])
-                    duplicate = any(is_similar_summary(prev, summary, threshold) for prev in phone_sent)
+                    user_sent = sent_this_pass.setdefault(sub.userId, [])
+                    duplicate = any(is_similar_summary(prev, summary, threshold) for prev in user_sent)
                     if duplicate:
                         print(f"    Incident {inc['number']}: near-duplicate of an alert already queued to this user this pass; no SMS.")
                         current_state = DUPLICATE_PREFIX + current_state
@@ -201,10 +233,8 @@ def check_and_notify():
                         print(f"*** Match for {user} ({route_label}): Incident {inc['number']} (Update: {is_update})")
                         prefix = "Incident UPDATE Alert" if is_update else "Incident Alert"
                         message = f"{prefix} for {route_label}: {summary}"
-
-                        # Enqueue outbound SMS alert with retries & DLQ handling
-                        enqueued.append(global_notification_queue.enqueue(to_phone=phone, message=message))
-                        phone_sent.append(summary)
+                        deliver(db, "UPDATE" if is_update else "NEW", inc["number"], message, inc)
+                        user_sent.append(summary)
 
                     # Recorded even when the SMS was suppressed, so the duplicate
                     # incident number doesn't alert on a later pass either.
@@ -228,7 +258,7 @@ def check_and_notify():
                         continue
                     print(f"*** Incident resolved for {user} ({route_label}): {inc_number}")
                     message = f"Incident Resolved for {route_label}: Incident {inc_number} has cleared."
-                    enqueued.append(global_notification_queue.enqueue(to_phone=phone, message=message))
+                    deliver(db, "RESOLVED", inc_number, message)
                     record.state = "RESOLVED"
         except Exception as e:
             for task in enqueued:
@@ -242,6 +272,16 @@ def check_and_notify():
 
     # Process all queued notifications (with retries and DLQ dispatch)
     dispatch_queue()
+
+def prune_message_log():
+    """Retention for the dashboard's message log. Best effort: alerts already went out."""
+    try:
+        with session_scope() as db:
+            deleted = prune_alert_messages(db)
+        if deleted:
+            print(f"Pruned {deleted} old dashboard message(s).")
+    except Exception as e:
+        print(f"Message log cleanup failed (retried next run): {e}")
 
 def main():
     # Importing config already validated every required/typed setting; this
@@ -268,6 +308,7 @@ def main():
                 print("Previous poll cycle still running - skipping this execution.")
                 return
             check_and_notify()
+            prune_message_log()
     except DependencyUnavailable as exc:
         # Raised by the lock, a strict queue write, or the pre-dispatch check.
         print(f"[Worker] Stopped: {exc}. No alerts were sent; they go out on the first run after recovery.")

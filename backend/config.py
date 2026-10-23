@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     # skipping cycles matters.
     run_lock_ttl_seconds: int = Field(default=300, alias="RUN_LOCK_TTL_SECONDS")
 
+    # Dashboard message log (AlertMessage) retention: rows older than this are
+    # deleted after each pass, resolved or not.
+    alert_log_max_age_hours: float = Field(default=48, gt=0, alias="ALERT_LOG_MAX_AGE_HOURS")
+
     # --- Route matching ------------------------------------------------------
     match_radius_miles: float = Field(default=3.0, alias="MATCH_RADIUS_MILES")
     # Word-overlap score (0..1) at or above which a new summary is treated as a
