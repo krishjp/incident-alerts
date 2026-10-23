@@ -1,9 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Plus, Trash2, ShieldAlert, Route, Pause, Play } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Plus, Trash2, ShieldAlert, Route, Pause, Play, Pencil, Save, X } from "lucide-react";
 import AddressAutocomplete from "@/components/AddressAutocomplete";
 import type { LatLon } from "@/lib/geo";
+
+const EMPTY_FORM = { origin: "", destination: "", area: "Los Angeles", startTime: "07:00", endTime: "09:00" };
 
 type Subscription = {
     id: string;
@@ -21,7 +23,10 @@ export default function Dashboard() {
     const [subs, setSubs] = useState<Subscription[]>([]);
     const [loading, setLoading] = useState(true);
     const [phone, setPhone] = useState("");
-    const [form, setForm] = useState({ origin: "", destination: "", area: "Los Angeles", startTime: "07:00", endTime: "09:00" });
+    const [form, setForm] = useState(EMPTY_FORM);
+    // Set while the form is editing an existing route instead of adding one.
+    const [editingId, setEditingId] = useState<string | null>(null);
+    const formRef = useRef<HTMLFormElement>(null);
     // Coordinates of the picked autocomplete suggestion per side; null means the
     // address was typed by hand and the server will geocode it.
     const [originPlace, setOriginPlace] = useState<LatLon | null>(null);
@@ -65,27 +70,53 @@ export default function Dashboard() {
         }
     };
 
-    const addRoute = async (e: React.FormEvent) => {
+    const startEditing = (sub: Subscription) => {
+        setEditingId(sub.id);
+        setForm({ origin: sub.origin, destination: sub.destination, area: sub.area, startTime: sub.startTime, endTime: sub.endTime });
+        setOriginPlace(null);
+        setDestinationPlace(null);
+        setError(null);
+        formRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    };
+
+    const stopEditing = () => {
+        setEditingId(null);
+        setForm(f => ({ ...EMPTY_FORM, area: f.area }));
+        setOriginPlace(null);
+        setDestinationPlace(null);
+    };
+
+    // One form for both adding and editing. An edit sends every field; the
+    // server only rebuilds the route when an address actually changed.
+    const saveRoute = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!form.origin || !form.destination || !form.area) return;
         setAdding(true);
         setError(null);
         try {
             const res = await fetch("/api/subscriptions", {
-                method: "POST", body: JSON.stringify({ ...form, originPlace, destinationPlace })
+                method: editingId ? "PATCH" : "POST",
+                body: JSON.stringify({ ...(editingId ? { id: editingId } : {}), ...form, originPlace, destinationPlace }),
             });
             if (!res.ok) {
                 const err = await res.json();
-                setError(err.error || "Failed to add route.");
+                setError(err.error || (editingId ? "Failed to update route." : "Failed to add route."));
             } else {
-                const newSub = await res.json();
-                setSubs([...subs, newSub]);
-                setForm({ ...form, origin: "", destination: "" }); // reset text fields
-                setOriginPlace(null);
-                setDestinationPlace(null);
+                const saved: Subscription = await res.json();
+                if (editingId) {
+                    setSubs(subs.map(s => (s.id === saved.id ? saved : s)));
+                    setNotice("Route updated.");
+                    setTimeout(() => setNotice(null), 3000);
+                    stopEditing();
+                } else {
+                    setSubs([...subs, saved]);
+                    setForm({ ...form, origin: "", destination: "" }); // reset text fields
+                    setOriginPlace(null);
+                    setDestinationPlace(null);
+                }
             }
         } catch {
-            setError("Error adding route.");
+            setError(editingId ? "Error updating route." : "Error adding route.");
         } finally {
             setAdding(false);
         }
@@ -112,6 +143,7 @@ export default function Dashboard() {
         const res = await fetch(`/api/subscriptions?id=${id}`, { method: "DELETE" });
         if (res.ok) {
             setSubs(subs.filter(s => s.id !== id));
+            if (editingId === id) stopEditing();
         } else {
             setError("Could not delete that route.");
         }
@@ -155,7 +187,13 @@ export default function Dashboard() {
             </div>
 
             {/* Add new route */}
-            <form onSubmit={addRoute} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 mb-8 flex flex-col gap-4">
+            <form ref={formRef} onSubmit={saveRoute} className={`bg-white p-6 rounded-2xl shadow-sm border mb-8 flex flex-col gap-4 ${editingId ? "border-emerald-300 ring-2 ring-emerald-100" : "border-slate-200"}`}>
+                {editingId && (
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 text-sm font-semibold text-emerald-700">
+                        <span className="flex items-center gap-2"><Pencil className="w-4 h-4" /> Editing route</span>
+                        <span className="text-xs font-normal text-slate-500">Changing an address recalculates the route.</span>
+                    </div>
+                )}
                 <div className="flex flex-col lg:flex-row gap-4 items-end">
                     <div className="w-full lg:w-48">
                         <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Area</label>
@@ -201,9 +239,18 @@ export default function Dashboard() {
                     </div>
                 </div>
 
-                <div className="flex justify-end mt-2 pt-2 border-t border-slate-100">
+                <div className="flex flex-col-reverse lg:flex-row justify-end gap-2 mt-2 pt-2 border-t border-slate-100">
+                    {editingId && (
+                        <button type="button" onClick={stopEditing} disabled={adding} className="w-full lg:w-auto px-6 py-2.5 border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-50 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 tracking-wide text-sm">
+                            <X className="w-4 h-4" /> Cancel
+                        </button>
+                    )}
                     <button type="submit" disabled={adding} className="w-full lg:w-auto px-6 py-2.5 bg-emerald-500 text-white font-bold rounded-xl hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 tracking-wide text-sm">
-                        {adding ? "Calculating Route..." : <><Plus className="w-4 h-4" /> Add Route</>}
+                        {adding
+                            ? (editingId ? "Saving..." : "Calculating Route...")
+                            : editingId
+                                ? <><Save className="w-4 h-4" /> Save Changes</>
+                                : <><Plus className="w-4 h-4" /> Add Route</>}
                     </button>
                 </div>
             </form>
@@ -220,7 +267,7 @@ export default function Dashboard() {
             ) : (
                 <div className="flex flex-col gap-3">
                     {subs.map(sub => (
-                        <div key={sub.id} className={`bg-white p-4 rounded-xl border shadow-sm flex items-center justify-between group transition-colors ${sub.isActive ? "border-slate-200 hover:border-emerald-200" : "border-slate-200 bg-slate-50"}`}>
+                        <div key={sub.id} className={`bg-white p-4 rounded-xl border shadow-sm flex items-center justify-between transition-colors ${editingId === sub.id ? "border-emerald-400" : sub.isActive ? "border-slate-200 hover:border-emerald-200" : "border-slate-200 bg-slate-50"}`}>
                             <div className={`flex items-start gap-3 ${sub.isActive ? "" : "opacity-60"}`}>
                                 <div className="p-2 bg-slate-100 rounded-lg mt-1">
                                     <Route className="w-5 h-5 text-slate-500" />
@@ -261,9 +308,18 @@ export default function Dashboard() {
                                     {sub.isActive ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
                                 </button>
                                 <button
+                                    onClick={() => startEditing(sub)}
+                                    aria-label="Edit this route"
+                                    title="Edit route"
+                                    className="text-slate-400 hover:text-emerald-600 p-2 rounded-lg hover:bg-emerald-50 transition-colors"
+                                >
+                                    <Pencil className="w-5 h-5" />
+                                </button>
+                                <button
                                     onClick={() => deleteRoute(sub.id)}
                                     aria-label="Delete this route"
-                                    className="text-slate-400 hover:text-red-500 p-2 rounded-lg hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                                    title="Delete route"
+                                    className="text-slate-400 hover:text-red-500 p-2 rounded-lg hover:bg-red-50 transition-colors"
                                 >
                                     <Trash2 className="w-5 h-5" />
                                 </button>
