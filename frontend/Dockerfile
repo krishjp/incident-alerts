@@ -28,5 +28,10 @@ COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 USER nextjs
 EXPOSE 3000
 ENV PORT=3000
+# The standalone server.js binds to $HOSTNAME, which Docker sets to the container
+# id. Resolving that fails with EAI_AGAIN when the container restarts before
+# Docker's DNS is ready (e.g. after Docker Desktop restarts), so bind to all
+# interfaces instead of looking anything up.
+ENV HOSTNAME="0.0.0.0"
 
 CMD ["node", "server.js"]
