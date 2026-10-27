@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MessageSquareText, Pause, Play, ShieldAlert } from "lucide-react";
+import { ChevronRight, MapPin, MessageSquareText, Pause, Play, ShieldAlert, X } from "lucide-react";
 
 type AlertMessage = {
     id: string;
@@ -15,6 +15,19 @@ type AlertMessage = {
     message: string;
     delivery: "twilio" | "mock" | "none";
     createdAt: string;
+};
+
+// Every alert about one incident on one route, oldest first. A route only sees
+// a handful of incidents inside the 48h log window, so the page lists these
+// rather than individual messages; the messages live in the detail dialog.
+type IncidentEvent = {
+    key: string;
+    routeLabel: string;
+    incidentNumber: string;
+    location: string | null;
+    messages: AlertMessage[];
+    latest: AlertMessage;
+    resolved: boolean;
 };
 
 // The worker runs about once a minute, so polling faster than this only adds load.
@@ -34,12 +47,153 @@ const KIND_STYLES: Record<AlertMessage["kind"], string> = {
     RESOLVED: "bg-emerald-100 text-emerald-800",
 };
 
-function matchLabel(m: AlertMessage) {
-    if (m.matchMethod === "spatial") {
+function eventKey(m: AlertMessage) {
+    return `${m.subscriptionId}_${m.incidentNumber}`;
+}
+
+function formatRoute(label: string) {
+    return label.replace("->", " → ");
+}
+
+function formatTime(iso: string) {
+    const d = new Date(iso);
+    const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    if (d.toDateString() === new Date().toDateString()) return time;
+    return `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
+}
+
+// RESOLVED alerts carry no match info, so describe the most recent alert that does.
+function matchLabel(messages: AlertMessage[]) {
+    const m = [...messages].reverse().find(x => x.matchMethod);
+    if (m?.matchMethod === "spatial") {
         return m.distanceMiles != null ? `Within ${m.distanceMiles.toFixed(1)} mi of route` : "Near route";
     }
-    if (m.matchMethod === "text") return "Location text match";
-    return "Dropped from feed / out of range";
+    if (m?.matchMethod === "text") return "Location text match";
+    return null;
+}
+
+function groupEvents(messages: AlertMessage[]): IncidentEvent[] {
+    const byKey = new Map<string, AlertMessage[]>();
+    // messages is newest-first; walk it backwards so each group is oldest-first.
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        const group = byKey.get(eventKey(m));
+        if (group) group.push(m);
+        else byKey.set(eventKey(m), [m]);
+    }
+    return [...byKey.entries()]
+        .map(([key, msgs]) => {
+            const latest = msgs[msgs.length - 1];
+            return {
+                key,
+                routeLabel: latest.routeLabel,
+                incidentNumber: latest.incidentNumber,
+                location: [...msgs].reverse().find(m => m.location)?.location ?? null,
+                messages: msgs,
+                latest,
+                resolved: latest.kind === "RESOLVED",
+            };
+        })
+        .sort((a, b) => b.latest.createdAt.localeCompare(a.latest.createdAt));
+}
+
+function StatusPill({ resolved }: { resolved: boolean }) {
+    return resolved ? (
+        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Resolved
+        </span>
+    ) : (
+        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-500" /> Active
+        </span>
+    );
+}
+
+function EventDialog({ event, onClose }: { event: IncidentEvent | null; onClose: () => void }) {
+    const ref = useRef<HTMLDialogElement>(null);
+    const bottom = useRef<HTMLLIElement>(null);
+
+    useEffect(() => {
+        const dialog = ref.current;
+        if (!dialog) return;
+        if (event && !dialog.open) {
+            dialog.showModal();
+            // A modal dialog doesn't stop the page behind it scrolling on touch devices.
+            document.documentElement.style.overflow = "hidden";
+        } else if (!event && dialog.open) {
+            dialog.close();
+        }
+    }, [event]);
+
+    // Open on the newest message, and follow new ones as they arrive.
+    const count = event?.messages.length ?? 0;
+    useEffect(() => {
+        if (count) bottom.current?.scrollIntoView({ block: "end" });
+    }, [count]);
+
+    const match = event ? matchLabel(event.messages) : null;
+
+    return (
+        <dialog
+            ref={ref}
+            aria-labelledby="event-dialog-title"
+            onClose={() => {
+                document.documentElement.style.overflow = "";
+                onClose();
+            }}
+            // Clicks on the backdrop land on the <dialog> itself; clicks inside land on its content.
+            onClick={e => { if (e.target === ref.current) ref.current?.close(); }}
+            className="p-0 bg-transparent max-w-none max-h-none w-full m-0 mt-auto sm:m-auto sm:max-w-lg backdrop:bg-slate-900/50 backdrop:backdrop-blur-sm"
+        >
+            {event && (
+                <div className="flex flex-col max-h-[90dvh] sm:max-h-[80dvh] overflow-hidden bg-white rounded-t-2xl sm:rounded-2xl shadow-xl">
+                    <div className="flex items-start gap-3 px-5 pt-4 pb-4 border-b border-slate-200">
+                        <div className="min-w-0 flex-1">
+                            <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-slate-200 sm:hidden" />
+                            <div className="flex flex-wrap items-center gap-2 mb-2">
+                                <StatusPill resolved={event.resolved} />
+                                <span className="text-xs text-slate-400">#{event.incidentNumber}</span>
+                            </div>
+                            <h2 id="event-dialog-title" className="text-lg font-bold text-slate-900 leading-snug">
+                                {event.location ?? `Incident #${event.incidentNumber}`}
+                            </h2>
+                            <p className="text-sm text-slate-500 mt-1">
+                                {formatRoute(event.routeLabel)}
+                                {match && <> · {match}</>}
+                            </p>
+                        </div>
+                        <button
+                            onClick={() => ref.current?.close()}
+                            aria-label="Close"
+                            className="-mr-2 p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+                        >
+                            <X className="w-5 h-5" />
+                        </button>
+                    </div>
+
+                    <ol className="flex-1 overflow-y-auto overscroll-contain px-5 py-4 space-y-4 bg-slate-50">
+                        {event.messages.map(m => (
+                            <li key={m.id}>
+                                <div className="flex items-center gap-2 mb-1.5 text-xs">
+                                    <span className={`px-1.5 py-0.5 rounded font-semibold ${KIND_STYLES[m.kind]}`}>{m.kind}</span>
+                                    <span className="text-slate-500 tabular-nums" title={new Date(m.createdAt).toLocaleString()}>
+                                        {formatTime(m.createdAt)}
+                                    </span>
+                                    <span className={`ml-auto px-1.5 py-0.5 rounded font-medium ${DELIVERY_BADGES[m.delivery].className}`}>
+                                        {DELIVERY_BADGES[m.delivery].label}
+                                    </span>
+                                </div>
+                                <p className="rounded-2xl rounded-tl-sm bg-white border border-slate-200 px-4 py-3 text-sm text-slate-800 whitespace-pre-line break-words shadow-sm">
+                                    {m.message}
+                                </p>
+                            </li>
+                        ))}
+                        <li ref={bottom} aria-hidden="true" />
+                    </ol>
+                </div>
+            )}
+        </dialog>
+    );
 }
 
 export default function LiveMessages() {
@@ -49,6 +203,7 @@ export default function LiveMessages() {
     const [paused, setPaused] = useState(false);
     const [routeFilter, setRouteFilter] = useState("all");
     const [fresh, setFresh] = useState<Set<string>>(new Set());
+    const [openKey, setOpenKey] = useState<string | null>(null);
     const newest = useRef<string | null>(null);
     const seen = useRef<Set<string>>(new Set());
 
@@ -70,11 +225,11 @@ export default function LiveMessages() {
             setMessages(prev => [...added, ...prev].slice(0, MAX_ROWS));
 
             if (!isFirstLoad) {
-                const ids = added.map(m => m.id);
-                setFresh(f => new Set([...f, ...ids]));
+                const keys = added.map(eventKey);
+                setFresh(f => new Set([...f, ...keys]));
                 setTimeout(() => setFresh(f => {
                     const next = new Set(f);
-                    ids.forEach(id => next.delete(id));
+                    keys.forEach(k => next.delete(k));
                     return next;
                 }), HIGHLIGHT_MS);
             }
@@ -92,18 +247,20 @@ export default function LiveMessages() {
         return () => clearInterval(timer);
     }, [paused, poll]);
 
-    const routes = useMemo(() => [...new Set(messages.map(m => m.routeLabel))].sort(), [messages]);
-    const visible = routeFilter === "all" ? messages : messages.filter(m => m.routeLabel === routeFilter);
+    const events = useMemo(() => groupEvents(messages), [messages]);
+    const routes = useMemo(() => [...new Set(events.map(e => e.routeLabel))].sort(), [events]);
+    const visible = routeFilter === "all" ? events : events.filter(e => e.routeLabel === routeFilter);
+    const openEvent = events.find(e => e.key === openKey) ?? null;
     const anyMock = messages.some(m => m.delivery === "mock");
     const anyLogOnly = messages.some(m => m.delivery === "none");
 
     return (
         <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4 mb-8">
+            <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-8">
                 <div>
                     <h1 className="text-3xl font-extrabold tracking-tight mb-2">Live Messages</h1>
                     <p className="text-slate-500 max-w-2xl">
-                        Every alert the worker queues for you, as it happens, labeled by the route that picked it up.
+                        Incidents the worker picked up on your routes. Tap one to see every alert sent about it.
                     </p>
                 </div>
                 <div className="flex items-center gap-3">
@@ -146,10 +303,10 @@ export default function LiveMessages() {
                         id="route-filter"
                         value={routeFilter}
                         onChange={e => setRouteFilter(e.target.value)}
-                        className="px-3 py-1.5 bg-white border border-slate-200 text-slate-800 rounded-lg text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
+                        className="min-w-0 px-3 py-1.5 bg-white border border-slate-200 text-slate-800 rounded-lg text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
                     >
                         <option value="all">All routes</option>
-                        {routes.map(r => <option key={r} value={r}>{r.replace("->", " → ")}</option>)}
+                        {routes.map(r => <option key={r} value={r}>{formatRoute(r)}</option>)}
                     </select>
                 </div>
             )}
@@ -165,54 +322,39 @@ export default function LiveMessages() {
                     </p>
                 </div>
             ) : (
-                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-x-auto">
-                    <table className="w-full text-sm">
-                        <thead>
-                            <tr className="border-b border-slate-200 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">
-                                <th className="px-4 py-3 whitespace-nowrap">Time</th>
-                                <th className="px-4 py-3">Route</th>
-                                <th className="px-4 py-3">Type</th>
-                                <th className="px-4 py-3">Detected by</th>
-                                <th className="px-4 py-3 min-w-80">Message</th>
-                                <th className="px-4 py-3">Delivery</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {visible.map(m => (
-                                <tr
-                                    key={m.id}
-                                    className={`border-b border-slate-100 last:border-0 align-top transition-colors duration-1000 ${fresh.has(m.id) ? "bg-emerald-50" : ""}`}
-                                >
-                                    <td className="px-4 py-3 whitespace-nowrap text-slate-500 tabular-nums" title={new Date(m.createdAt).toLocaleString()}>
-                                        {new Date(m.createdAt).toLocaleTimeString()}
-                                    </td>
-                                    <td className="px-4 py-3">
-                                        <span className="inline-block px-2 py-1 bg-slate-100 rounded-md font-medium text-slate-700 whitespace-nowrap">
-                                            {m.routeLabel.replace("->", " → ")}
+                <ul className="space-y-3">
+                    {visible.map(e => (
+                        <li key={e.key}>
+                            <button
+                                onClick={() => setOpenKey(e.key)}
+                                className={`group w-full text-left rounded-2xl border shadow-sm p-4 sm:p-5 flex items-center gap-3 transition-colors duration-1000 hover:border-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${fresh.has(e.key) ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"} ${e.resolved ? "opacity-75" : ""}`}
+                            >
+                                <div className="min-w-0 flex-1">
+                                    <div className="flex items-center gap-2 mb-2 text-xs">
+                                        <StatusPill resolved={e.resolved} />
+                                        <span className="ml-auto text-slate-400 tabular-nums" title={new Date(e.latest.createdAt).toLocaleString()}>
+                                            {formatTime(e.latest.createdAt)}
                                         </span>
-                                    </td>
-                                    <td className="px-4 py-3">
-                                        <span className={`inline-block px-2 py-0.5 rounded font-semibold text-xs ${KIND_STYLES[m.kind]}`}>
-                                            {m.kind}
-                                        </span>
-                                        <div className="text-xs text-slate-400 mt-1 whitespace-nowrap">#{m.incidentNumber}</div>
-                                    </td>
-                                    <td className="px-4 py-3 text-slate-600">
-                                        <div className="whitespace-nowrap">{matchLabel(m)}</div>
-                                        {m.location && <div className="text-xs text-slate-400 mt-1">{m.location}</div>}
-                                    </td>
-                                    <td className="px-4 py-3 text-slate-800">{m.message}</td>
-                                    <td className="px-4 py-3">
-                                        <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${DELIVERY_BADGES[m.delivery].className}`}>
-                                            {DELIVERY_BADGES[m.delivery].label}
-                                        </span>
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
+                                    </div>
+                                    <p className="flex items-start gap-1.5 font-semibold text-slate-900 leading-snug">
+                                        <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
+                                        <span className="min-w-0 break-words">{e.location ?? `Incident #${e.incidentNumber}`}</span>
+                                    </p>
+                                    <p className="mt-1.5 text-sm text-slate-600 line-clamp-2 break-words">{e.latest.message}</p>
+                                    <p className="mt-2 text-xs text-slate-400">
+                                        <span className="font-medium text-slate-500">{formatRoute(e.routeLabel)}</span>
+                                        {" · "}{e.messages.length} {e.messages.length === 1 ? "alert" : "alerts"}
+                                        {matchLabel(e.messages) && <> · {matchLabel(e.messages)}</>}
+                                    </p>
+                                </div>
+                                <ChevronRight className="h-5 w-5 shrink-0 text-slate-300 group-hover:text-slate-500 transition-colors" />
+                            </button>
+                        </li>
+                    ))}
+                </ul>
             )}
+
+            <EventDialog event={openEvent} onClose={() => setOpenKey(null)} />
         </div>
     );
 }

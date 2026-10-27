@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle, Chrome } from "lucide-react";
 import AuthField from "@/components/AuthField";
-import { LOGIN_RATE_LIMITED, validateEmail, validateLoginPassword } from "@/lib/validation";
+import { LOGIN_RATE_LIMITED, validateIdentifier, validateLoginPassword } from "@/lib/validation";
 
 export default function Login() {
     const router = useRouter();
@@ -18,7 +18,7 @@ export default function Login() {
     // not while they are still typing.
     const [touched, setTouched] = useState({ email: false, password: false });
 
-    const emailError = validateEmail(email);
+    const emailError = validateIdentifier(email);
     const passwordError = validateLoginPassword(password);
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -39,7 +39,7 @@ export default function Login() {
             setError(
                 res.error === LOGIN_RATE_LIMITED
                     ? "Too many sign-in attempts. Wait a few minutes and try again."
-                    : "Incorrect email or password.",
+                    : "Incorrect email/username or password.",
             );
             setLoading(false);
         } else {
@@ -72,14 +72,14 @@ export default function Login() {
                             </div>
                         )}
                         <AuthField
-                            label="Email address"
-                            type="email"
-                            autoComplete="email"
+                            label="Email or username"
+                            type="text"
+                            autoComplete="username"
                             value={email}
                             onChange={setEmail}
                             onBlur={() => setTouched((t) => ({ ...t, email: true }))}
                             error={touched.email ? emailError : null}
-                            placeholder="user@example.com"
+                            placeholder="you@example.com or username"
                         />
 
                         <AuthField

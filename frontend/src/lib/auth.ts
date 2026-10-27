@@ -5,7 +5,7 @@ import GoogleProvider from "next-auth/providers/google";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import { prisma } from "@/lib/prisma";
 import { rateLimit } from "@/lib/rate-limit";
-import { LOGIN_RATE_LIMITED, validateEmail, validateLoginPassword } from "@/lib/validation";
+import { LOGIN_RATE_LIMITED, validateIdentifier, validateLoginPassword } from "@/lib/validation";
 import bcrypt from "bcryptjs";
 
 export const authOptions: NextAuthOptions = {
@@ -24,18 +24,18 @@ export const authOptions: NextAuthOptions = {
         CredentialsProvider({
             name: "Credentials",
             credentials: {
-                email: { label: "Email", type: "email", placeholder: "test@example.com" },
+                email: { label: "Email or username", type: "text", placeholder: "test@example.com" },
                 password: { label: "Password", type: "password" }
             },
             async authorize(credentials) {
                 if (!credentials?.email || !credentials?.password) return null;
                 // Malformed input can't match an account; rejecting it here also
                 // keeps oversized passwords away from bcrypt.
-                if (validateEmail(credentials.email) || validateLoginPassword(credentials.password)) {
+                if (validateIdentifier(credentials.email) || validateLoginPassword(credentials.password)) {
                     return null;
                 }
 
-                // Throttle per email address, so a stolen password list can't be
+                // Throttle per account identifier, so a stolen password list can't be
                 // sprayed against one account. Fails open if the limiter is down.
                 const limit = await rateLimit(
                     "auth:login",
@@ -47,7 +47,7 @@ export const authOptions: NextAuthOptions = {
                 // through as the signIn() error.
                 if (!limit.allowed) throw new Error(LOGIN_RATE_LIMITED);
 
-                // Registration stores emails lowercased; the exact-match lookup
+                // Registration stores identifiers lowercased; the exact-match lookup
                 // first keeps any pre-existing mixed-case rows working.
                 const user =
                     (await prisma.user.findUnique({ where: { email: credentials.email } })) ??

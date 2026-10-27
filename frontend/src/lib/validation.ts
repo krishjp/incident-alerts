@@ -9,11 +9,25 @@ export const MAX_PASSWORD_BYTES = 72;
 export const MAX_NAME_LENGTH = 100;
 const MAX_EMAIL_LENGTH = 254;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const USERNAME_PATTERN = /^[A-Za-z0-9._-]{3,32}$/;
 
-export function validateEmail(email: unknown): string | null {
-    if (typeof email !== "string" || email.trim().length === 0) return "Email is required.";
-    if (email.trim().length > MAX_EMAIL_LENGTH || !EMAIL_PATTERN.test(email.trim())) {
-        return "Enter a valid email address.";
+/**
+ * The account identifier is either an email address or a plain username. Nothing
+ * is ever sent to it, so it isn't verified; both forms live in `User.email`.
+ */
+export function validateIdentifier(identifier: unknown): string | null {
+    if (typeof identifier !== "string" || identifier.trim().length === 0) {
+        return "Email or username is required.";
+    }
+    const value = identifier.trim();
+    if (value.includes("@")) {
+        if (value.length > MAX_EMAIL_LENGTH || !EMAIL_PATTERN.test(value)) {
+            return "Enter a valid email address or a username.";
+        }
+        return null;
+    }
+    if (!USERNAME_PATTERN.test(value)) {
+        return "Username must be 3-32 letters, numbers, dots, dashes or underscores.";
     }
     return null;
 }

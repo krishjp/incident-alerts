@@ -7,7 +7,7 @@ import { AlertCircle, Chrome } from "lucide-react";
 import AuthField from "@/components/AuthField";
 import {
     MIN_PASSWORD_LENGTH,
-    validateEmail,
+    validateIdentifier,
     validateName,
     validateNewPassword,
 } from "@/lib/validation";
@@ -26,7 +26,7 @@ export default function Register() {
 
     const errors = {
         name: validateName(name),
-        email: validateEmail(email),
+        email: validateIdentifier(email),
         password: validateNewPassword(password),
         confirm: confirmPassword !== password ? "Passwords don't match." : null,
     };
@@ -100,14 +100,14 @@ export default function Register() {
                         />
 
                         <AuthField
-                            label="Email address"
-                            type="email"
-                            autoComplete="email"
+                            label="Email or username"
+                            type="text"
+                            autoComplete="username"
                             value={email}
                             onChange={setEmail}
                             onBlur={touch("email")}
                             error={touched.email ? errors.email : null}
-                            placeholder="user@example.com"
+                            placeholder="you@example.com or username"
                         />
 
                         <AuthField
