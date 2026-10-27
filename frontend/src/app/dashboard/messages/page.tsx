@@ -8,7 +8,7 @@ type AlertMessage = {
     subscriptionId: string;
     routeLabel: string;
     incidentNumber: string;
-    kind: "NEW" | "UPDATE" | "RESOLVED";
+    kind: "NEW" | "UPDATE" | "RESOLVED" | "STALE" | "ACTIVE";
     matchMethod: "spatial" | "text" | null;
     distanceMiles: number | null;
     location: string | null;
@@ -17,7 +17,7 @@ type AlertMessage = {
     createdAt: string;
 };
 
-// Every alert about one incident on one route, oldest first. A route only sees
+// Every alert about one incident on one route, newest first. A route only sees
 // a handful of incidents inside the 48h log window, so the page lists these
 // rather than individual messages; the messages live in the detail dialog.
 type IncidentEvent = {
@@ -27,8 +27,13 @@ type IncidentEvent = {
     location: string | null;
     messages: AlertMessage[];
     latest: AlertMessage;
-    resolved: boolean;
+    status: IncidentStatus;
 };
+
+// Where an incident stands, from the last thing the worker logged about it.
+// Stale means its route left the time window while it was open: it isn't being
+// checked, so it is neither known to be active nor known to have cleared.
+type IncidentStatus = "active" | "resolved" | "stale";
 
 // The worker runs about once a minute, so polling faster than this only adds load.
 const POLL_INTERVAL_MS = 5000;
@@ -45,7 +50,21 @@ const KIND_STYLES: Record<AlertMessage["kind"], string> = {
     NEW: "bg-amber-100 text-amber-800",
     UPDATE: "bg-sky-100 text-sky-800",
     RESOLVED: "bg-emerald-100 text-emerald-800",
+    STALE: "bg-slate-200 text-slate-700",
+    ACTIVE: "bg-amber-100 text-amber-800",
 };
+
+const STATUS_PILLS: Record<IncidentStatus, { label: string; pill: string; dot: string }> = {
+    active: { label: "Active", pill: "bg-amber-100 text-amber-800", dot: "bg-amber-500" },
+    resolved: { label: "Resolved", pill: "bg-emerald-100 text-emerald-800", dot: "bg-emerald-500" },
+    stale: { label: "Stale", pill: "bg-slate-200 text-slate-700", dot: "bg-slate-400" },
+};
+
+function statusOf(m: AlertMessage): IncidentStatus {
+    if (m.kind === "RESOLVED") return "resolved";
+    if (m.kind === "STALE") return "stale";
+    return "active";
+}
 
 function eventKey(m: AlertMessage) {
     return `${m.subscriptionId}_${m.incidentNumber}`;
@@ -62,9 +81,9 @@ function formatTime(iso: string) {
     return `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
 }
 
-// RESOLVED alerts carry no match info, so describe the most recent alert that does.
+// RESOLVED and STALE entries carry no match info, so describe the most recent alert that does.
 function matchLabel(messages: AlertMessage[]) {
-    const m = [...messages].reverse().find(x => x.matchMethod);
+    const m = messages.find(x => x.matchMethod);
     if (m?.matchMethod === "spatial") {
         return m.distanceMiles != null ? `Within ${m.distanceMiles.toFixed(1)} mi of route` : "Near route";
     }
@@ -74,44 +93,40 @@ function matchLabel(messages: AlertMessage[]) {
 
 function groupEvents(messages: AlertMessage[]): IncidentEvent[] {
     const byKey = new Map<string, AlertMessage[]>();
-    // messages is newest-first; walk it backwards so each group is oldest-first.
-    for (let i = messages.length - 1; i >= 0; i--) {
-        const m = messages[i];
+    // messages is newest-first, and each group keeps that order.
+    for (const m of messages) {
         const group = byKey.get(eventKey(m));
         if (group) group.push(m);
         else byKey.set(eventKey(m), [m]);
     }
     return [...byKey.entries()]
         .map(([key, msgs]) => {
-            const latest = msgs[msgs.length - 1];
+            const latest = msgs[0];
             return {
                 key,
                 routeLabel: latest.routeLabel,
                 incidentNumber: latest.incidentNumber,
-                location: [...msgs].reverse().find(m => m.location)?.location ?? null,
+                location: msgs.find(m => m.location)?.location ?? null,
                 messages: msgs,
                 latest,
-                resolved: latest.kind === "RESOLVED",
+                status: statusOf(latest),
             };
         })
         .sort((a, b) => b.latest.createdAt.localeCompare(a.latest.createdAt));
 }
 
-function StatusPill({ resolved }: { resolved: boolean }) {
-    return resolved ? (
-        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Resolved
-        </span>
-    ) : (
-        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">
-            <span className="h-1.5 w-1.5 rounded-full bg-amber-500" /> Active
+function StatusPill({ status }: { status: IncidentStatus }) {
+    const { label, pill, dot } = STATUS_PILLS[status];
+    return (
+        <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold ${pill}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${dot}`} /> {label}
         </span>
     );
 }
 
 function EventDialog({ event, onClose }: { event: IncidentEvent | null; onClose: () => void }) {
     const ref = useRef<HTMLDialogElement>(null);
-    const bottom = useRef<HTMLLIElement>(null);
+    const list = useRef<HTMLOListElement>(null);
 
     useEffect(() => {
         const dialog = ref.current;
@@ -125,10 +140,10 @@ function EventDialog({ event, onClose }: { event: IncidentEvent | null; onClose:
         }
     }, [event]);
 
-    // Open on the newest message, and follow new ones as they arrive.
+    // Newest is first, so a newly arrived message lands at the top; keep the list there.
     const count = event?.messages.length ?? 0;
     useEffect(() => {
-        if (count) bottom.current?.scrollIntoView({ block: "end" });
+        if (count) list.current?.scrollTo({ top: 0 });
     }, [count]);
 
     const match = event ? matchLabel(event.messages) : null;
@@ -147,31 +162,34 @@ function EventDialog({ event, onClose }: { event: IncidentEvent | null; onClose:
         >
             {event && (
                 <div className="flex flex-col max-h-[90dvh] sm:max-h-[80dvh] overflow-hidden bg-white rounded-t-2xl sm:rounded-2xl shadow-xl">
-                    <div className="flex items-start gap-3 px-5 pt-4 pb-4 border-b border-slate-200">
-                        <div className="min-w-0 flex-1">
-                            <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-slate-200 sm:hidden" />
-                            <div className="flex flex-wrap items-center gap-2 mb-2">
-                                <StatusPill resolved={event.resolved} />
-                                <span className="text-xs text-slate-400">#{event.incidentNumber}</span>
+                    <div className="px-5 pt-3 pb-4 border-b border-slate-200">
+                        {/* Spans the whole header so it centres on the sheet, not on the text column. */}
+                        <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-slate-200 sm:hidden" />
+                        <div className="flex items-start gap-3">
+                            <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-2 mb-2">
+                                    <StatusPill status={event.status} />
+                                    <span className="text-xs text-slate-400">#{event.incidentNumber}</span>
+                                </div>
+                                <h2 id="event-dialog-title" className="text-lg font-bold text-slate-900 leading-snug">
+                                    {event.location ?? `Incident #${event.incidentNumber}`}
+                                </h2>
+                                <p className="text-sm text-slate-500 mt-1">
+                                    {formatRoute(event.routeLabel)}
+                                    {match && <> · {match}</>}
+                                </p>
                             </div>
-                            <h2 id="event-dialog-title" className="text-lg font-bold text-slate-900 leading-snug">
-                                {event.location ?? `Incident #${event.incidentNumber}`}
-                            </h2>
-                            <p className="text-sm text-slate-500 mt-1">
-                                {formatRoute(event.routeLabel)}
-                                {match && <> · {match}</>}
-                            </p>
+                            <button
+                                onClick={() => ref.current?.close()}
+                                aria-label="Close"
+                                className="-mr-2 p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
                         </div>
-                        <button
-                            onClick={() => ref.current?.close()}
-                            aria-label="Close"
-                            className="-mr-2 p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
-                        >
-                            <X className="w-5 h-5" />
-                        </button>
                     </div>
 
-                    <ol className="flex-1 overflow-y-auto overscroll-contain px-5 py-4 space-y-4 bg-slate-50">
+                    <ol ref={list} className="flex-1 overflow-y-auto overscroll-contain px-5 py-4 space-y-4 bg-slate-50">
                         {event.messages.map(m => (
                             <li key={m.id}>
                                 <div className="flex items-center gap-2 mb-1.5 text-xs">
@@ -188,7 +206,6 @@ function EventDialog({ event, onClose }: { event: IncidentEvent | null; onClose:
                                 </p>
                             </li>
                         ))}
-                        <li ref={bottom} aria-hidden="true" />
                     </ol>
                 </div>
             )}
@@ -327,11 +344,11 @@ export default function LiveMessages() {
                         <li key={e.key}>
                             <button
                                 onClick={() => setOpenKey(e.key)}
-                                className={`group w-full text-left rounded-2xl border shadow-sm p-4 sm:p-5 flex items-center gap-3 transition-colors duration-1000 hover:border-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${fresh.has(e.key) ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"} ${e.resolved ? "opacity-75" : ""}`}
+                                className={`group w-full text-left rounded-2xl border shadow-sm p-4 sm:p-5 flex items-center gap-3 transition-colors duration-1000 hover:border-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${fresh.has(e.key) ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"} ${e.status === "active" ? "" : "opacity-75"}`}
                             >
                                 <div className="min-w-0 flex-1">
                                     <div className="flex items-center gap-2 mb-2 text-xs">
-                                        <StatusPill resolved={e.resolved} />
+                                        <StatusPill status={e.status} />
                                         <span className="ml-auto text-slate-400 tabular-nums" title={new Date(e.latest.createdAt).toLocaleString()}>
                                             {formatTime(e.latest.createdAt)}
                                         </span>

@@ -117,7 +117,7 @@ model AlertMessage {
   subscriptionId String
   routeLabel     String   // "origin->destination" as it appeared in the SMS
   incidentNumber String
-  kind           String   // "NEW" | "UPDATE" | "RESOLVED"
+  kind           String   // "NEW" | "UPDATE" | "RESOLVED" | "STALE" | "ACTIVE"
   matchMethod    String?  // "spatial" (within MATCH_RADIUS_MILES) | "text" (no lat/lon, name match)
   distanceMiles  Float?
   location       String?

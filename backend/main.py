@@ -18,6 +18,13 @@ from cache_handler import global_incident_cache
 # incident that did alert carries the updates and the "cleared" message.
 DUPLICATE_PREFIX = "DUPLICATE:"
 
+# NotifiedIncident.state prefix for an incident whose route left its time window
+# while it was open (the previous state follows the prefix). A route outside its
+# window is never polled, so nothing can tell whether the incident cleared; it is
+# parked here, silently, instead of being left looking active. It comes back only
+# if the incident is still on the board when the route is next polled.
+STALE_PREFIX = "STALE:"
+
 def summarize_incident(incident_data):
     inc_num = incident_data.get('number', 'unknown')
     raw_details = str(incident_data.get('details', ''))
@@ -50,7 +57,10 @@ def summarize_incident(incident_data):
 
 from sqlalchemy import text
 
-from models import engine, get_active_subscriptions, prune_alert_messages, session_scope, AlertMessage, NotifiedIncident
+from models import (
+    engine, get_active_subscriptions, prune_alert_messages, session_scope,
+    AlertMessage, NotifiedIncident, RouteSubscription,
+)
 from caltrans_client import fetch_caltrans_incidents
 from notification_queue import global_notification_queue
 
@@ -91,6 +101,56 @@ def dispatch_queue():
         )
     global_notification_queue.process_queue()
 
+def mark_stale_incidents(active_sub_ids):
+    """
+    Parks open incidents of routes that are not being polled this pass (outside
+    their window, paused, or deleted). Logged for the dashboard, never texted.
+    """
+    try:
+        with session_scope() as db:
+            open_records = [
+                record for record in db.query(NotifiedIncident).filter(
+                    NotifiedIncident.state != "RESOLVED",
+                    ~NotifiedIncident.state.like(f"{STALE_PREFIX}%"),
+                    ~NotifiedIncident.state.like(f"{DUPLICATE_PREFIX}%"),
+                ).all()
+                if record.id.split("_", 1)[0] not in active_sub_ids
+                and record.state != "RESOLVED"
+                and not record.state.startswith((STALE_PREFIX, DUPLICATE_PREFIX))
+            ]
+            if not open_records:
+                return
+            sub_ids = {record.id.split("_", 1)[0] for record in open_records}
+            subs = {
+                sub.id: sub for sub in db.query(RouteSubscription).filter(
+                    RouteSubscription.id.in_(list(sub_ids))
+                ).all()
+            }
+            for record in open_records:
+                sub_id, inc_number = record.id.split("_", 1)
+                record.state = STALE_PREFIX + record.state
+                sub = subs.get(sub_id)
+                if sub is None:
+                    continue  # deleted route: nothing left to show it under
+                route_label = f"{sub.origin}->{sub.destination}"
+                print(f"  Incident {inc_number} on {route_label} is stale (route outside its window).")
+                db.add(AlertMessage(
+                    userId=sub.userId,
+                    subscriptionId=sub.id,
+                    routeLabel=route_label,
+                    incidentNumber=inc_number,
+                    kind="STALE",
+                    message=(
+                        f"No longer tracking Incident {inc_number} for {route_label}: the route "
+                        "is outside its alert window. Tracking resumes if it is still reported "
+                        "the next time the route is checked."
+                    ),
+                    delivery="none",
+                ))
+    except Exception as e:
+        print(f"Stale incident sweep failed (retried next run): {e}")
+
+
 def check_and_notify():
     print("Checking active subscriptions...")
     # Summaries already sent to each user this pass. CHP regularly files one
@@ -98,6 +158,7 @@ def check_and_notify():
     # matches the same incident twice — either way they should get one SMS.
     sent_this_pass = {}
     active_subs = get_active_subscriptions()
+    mark_stale_incidents({s["sub"].id for s in active_subs})
     if not active_subs:
         print("No active subscriptions for the current time window.")
         # Process any pending retries in the notification queue
@@ -160,9 +221,9 @@ def check_and_notify():
         # fingerprints and the send queue never disagree.
         enqueued = []
 
-        def deliver(db, kind, inc_number, message, inc=None):
+        def deliver(db, kind, inc_number, message, inc=None, sms=True):
             """Logs the alert for the dashboard, and queues an SMS if the user has a phone."""
-            if phone:
+            if phone and sms:
                 # Enqueue outbound SMS alert with retries & DLQ handling
                 enqueued.append(global_notification_queue.enqueue(to_phone=phone, message=message))
                 delivery = "twilio" if settings.sms_enabled else "mock"
@@ -200,6 +261,18 @@ def check_and_notify():
                     # Fingerprint of the incident details, used to detect updates
                     current_state = str(inc.get('details', ''))
                     notified_record = previously_notified.get(inc_id)
+
+                    if notified_record and notified_record.state.startswith(STALE_PREFIX):
+                        # Still on the board after the route was parked: tracking
+                        # resumes. The restored state means an unchanged incident
+                        # stays silent, and a changed one alerts as a normal UPDATE.
+                        notified_record.state = notified_record.state[len(STALE_PREFIX):]
+                        print(f"    Incident {inc['number']}: still reported, tracking resumed.")
+                        deliver(
+                            db, "ACTIVE", inc["number"],
+                            f"Tracking resumed for {route_label}: Incident {inc['number']} is still reported.",
+                            inc, sms=False,
+                        )
 
                     if notified_record and notified_record.state == current_state:
                         continue  # already alerted, nothing changed
@@ -248,7 +321,7 @@ def check_and_notify():
                 # as resolved. The RESOLVED sentinel makes the cleared alert fire
                 # exactly once.
                 for record_id, record in previously_notified.items():
-                    if record.state == "RESOLVED":
+                    if record.state == "RESOLVED" or record.state.startswith(STALE_PREFIX):
                         continue
                     inc_number = record_id[len(id_prefix):]
                     if inc_number in matched_numbers:

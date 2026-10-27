@@ -176,8 +176,11 @@ class _FakeDb:
     def __init__(self):
         self.rows = {}
         self.messages = []
+        self.subs = {}
 
-    def query(self, _model):
+    def query(self, model):
+        if model is main.RouteSubscription:
+            return _FakeQuery(self.subs.values())
         return _FakeQuery(self.rows.values())
 
     def add(self, record):
@@ -216,8 +219,10 @@ def worker(monkeypatch):
     cache = {}
 
     sub = SimpleNamespace(id="sub1", userId="user1", origin="Torrance", destination="Lawndale", polyline="x")
-    monkeypatch.setattr(main, "get_active_subscriptions",
-                        lambda: [{"sub": sub, "phone": "+15551234567", "user": "u@example.com"}])
+    db.subs[sub.id] = sub
+    # Emptying this list takes the route out of its time window.
+    active = [{"sub": sub, "phone": "+15551234567", "user": "u@example.com"}]
+    monkeypatch.setattr(main, "get_active_subscriptions", lambda: list(active))
     monkeypatch.setattr(main, "fetch_caltrans_incidents", lambda: list(feed))
     monkeypatch.setattr(main, "is_within_range", lambda *a, **k: True)
     monkeypatch.setattr(main, "global_notification_queue", queue)
@@ -237,7 +242,7 @@ def worker(monkeypatch):
     monkeypatch.setattr(main, "global_incident_cache",
                         SimpleNamespace(get_summary=lambda n, d: cache.get((n, d))))
 
-    return SimpleNamespace(feed=feed, summaries=summaries, queue=queue, db=db)
+    return SimpleNamespace(feed=feed, summaries=summaries, queue=queue, db=db, active=active)
 
 
 class TestCheckAndNotifyDedupe:
@@ -335,3 +340,71 @@ class TestCheckAndNotifyDedupe:
 
         assert worker.queue.sent == []
         assert [(m.kind, m.delivery) for m in worker.db.messages] == [("NEW", "none"), ("RESOLVED", "none")]
+
+
+class TestStaleIncidents:
+    def _alert_then_leave_window(self, worker):
+        worker.summaries.update({"a": REWORDED_A})
+        worker.feed[:] = [_incident("LA01", "a")]
+        main.check_and_notify()
+        worker.window = list(worker.active)
+        worker.active.clear()
+        main.check_and_notify()
+
+    def test_leaving_the_window_parks_the_incident_silently(self, worker):
+        self._alert_then_leave_window(worker)
+
+        assert worker.db.rows["sub1_LA01"].state.startswith(main.STALE_PREFIX)
+        assert len(worker.queue.sent) == 1
+        stale = worker.db.messages[-1]
+        assert (stale.kind, stale.delivery, stale.incidentNumber) == ("STALE", "none", "LA01")
+        assert stale.routeLabel == "Torrance->Lawndale"
+
+    def test_stale_incident_is_not_parked_twice(self, worker):
+        self._alert_then_leave_window(worker)
+        main.check_and_notify()
+
+        assert [m.kind for m in worker.db.messages] == ["NEW", "STALE"]
+
+    def test_still_reported_next_window_resumes_without_an_sms(self, worker):
+        self._alert_then_leave_window(worker)
+        worker.active.extend(worker.window)
+        main.check_and_notify()
+
+        assert [m.kind for m in worker.db.messages] == ["NEW", "STALE", "ACTIVE"]
+        assert worker.db.messages[-1].delivery == "none"
+        assert not worker.db.rows["sub1_LA01"].state.startswith(main.STALE_PREFIX)
+        assert len(worker.queue.sent) == 1
+
+        main.check_and_notify()
+        assert [m.kind for m in worker.db.messages] == ["NEW", "STALE", "ACTIVE"]
+
+    def test_changed_while_stale_resumes_with_an_update(self, worker):
+        self._alert_then_leave_window(worker)
+        worker.summaries["b"] = "Traffic collision I-405 N / Palo Verde Ave onramp. All lanes closed. Injuries reported."
+        worker.feed[:] = [_incident("LA01", "b")]
+        worker.active.extend(worker.window)
+        main.check_and_notify()
+
+        assert [m.kind for m in worker.db.messages] == ["NEW", "STALE", "ACTIVE", "UPDATE"]
+        assert len(worker.queue.sent) == 2
+
+    def test_gone_by_next_window_stays_stale_and_silent(self, worker):
+        self._alert_then_leave_window(worker)
+        worker.feed[:] = []
+        worker.active.extend(worker.window)
+        main.check_and_notify()
+
+        assert worker.db.rows["sub1_LA01"].state.startswith(main.STALE_PREFIX)
+        assert [m.kind for m in worker.db.messages] == ["NEW", "STALE"]
+        assert len(worker.queue.sent) == 1
+
+    def test_resolved_and_duplicate_incidents_are_left_alone(self, worker):
+        worker.db.rows["sub1_OLD"] = SimpleNamespace(id="sub1_OLD", state="RESOLVED")
+        worker.db.rows["sub1_DUP"] = SimpleNamespace(id="sub1_DUP", state=main.DUPLICATE_PREFIX + "x")
+        worker.active.clear()
+        main.check_and_notify()
+
+        assert worker.db.rows["sub1_OLD"].state == "RESOLVED"
+        assert worker.db.rows["sub1_DUP"].state.startswith(main.DUPLICATE_PREFIX)
+        assert worker.db.messages == []

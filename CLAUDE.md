@@ -84,6 +84,11 @@ if you want to avoid hitting live external services (Caltrans, Nominatim/OSRM, G
    that no longer appear among the current matches (dropped from the feed or moved out of range) get a
    one-time "Resolved" alert and `state` is set to the sentinel `"RESOLVED"`, so a user is only ever re-alerted
    for a genuine content change or a resolution — never for the same unchanged, still-open incident.
+   A subscription outside its time window is never polled, so its open incidents can't be known to have
+   cleared: `mark_stale_incidents` (run first each pass) prefixes their `state` with `STALE:` and logs a
+   `STALE` message (log only, never SMS) instead of leaving them looking active. If the incident is still on the
+   board the next time the route is polled, the prefix is dropped, an `ACTIVE` log entry is written, and it is
+   treated as an ordinary unchanged/updated incident; if it's gone it simply stays stale — no "Resolved" SMS.
    On top of that, `alert_dedupe.is_similar_summary` suppresses SMS whose summary is only a rewording of one
    already sent. A flip in injury/fatal/closed/cleared/fire/hazmat facts (regex) always sends; word-overlap ≥
    `SUMMARY_SIMILARITY_THRESHOLD` suppresses with no model call; only below that is a Vercel AI Gateway decision

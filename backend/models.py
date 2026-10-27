@@ -98,8 +98,8 @@ class AlertMessage(Base):
     subscriptionId = Column(String)
     routeLabel = Column(String)
     incidentNumber = Column(String)
-    kind = Column(String)  # "NEW" | "UPDATE" | "RESOLVED"
-    matchMethod = Column(String, nullable=True)  # "spatial" | "text"; None for RESOLVED
+    kind = Column(String)  # "NEW" | "UPDATE" | "RESOLVED" | "STALE" | "ACTIVE"
+    matchMethod = Column(String, nullable=True)  # "spatial" | "text"; None for RESOLVED/STALE
     distanceMiles = Column(Float, nullable=True)
     location = Column(String, nullable=True)
     message = Column(String)

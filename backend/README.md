@@ -105,6 +105,10 @@ notification queue) end-to-end without hitting the live Caltrans feed.
    - **Resolved incident** (delete a `<Placemark>` that was previously alerted on, or rename its incident
      number) → one `Incident Resolved` alert once the incident drops out of the feed for that subscription,
      then silence — `check_and_notify()` flags it `state = "RESOLVED"` so it isn't re-sent on subsequent runs.
+   A fourth case needs no feed edit: when a subscription's time window ends, its still-open incidents are
+   marked stale (`state` gets a `STALE:` prefix, a log-only `STALE` message is written, no SMS). If the
+   incident is still in the feed the next time the route is polled it returns to active without an SMS
+   (or with an `UPDATE` if its details changed); if it's gone it stays stale.
    In all three cases, an incident is only ever re-alerted for a genuine content change or a resolution —
    never for the same unchanged, still-open incident.
 5. Unset or remove `CALTRANS_FEED_URL` from `backend/.env` before running against the live feed again.
